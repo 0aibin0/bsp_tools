@@ -1,0 +1,46 @@
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+
+# ===== PyInstaller 构建产物 =====
+# build/ 里是打包中间产物（.pkg 一个就有 34MB），一律不进仓库
+build/
+# 注意：带斜杠的模式（dist/*.pkg）在 gitignore 里是锚定到本文件所在目录的，
+# 匹配不到 bsp_tools/dist/ 下面的东西，所以这里写成不带斜杠的形式
+*.pkg
+# onedir 目录版：140 个文件、95MB，只在本地产出给固定工位用，不进仓库
+*_onedir/
+*.spec.bak
+
+# 仓库里只保留最新版本的 exe（bsp_tools/dist/DisplayTools_v3.1.2.exe）。
+# 以后出新版本时，请删掉旧 exe 再提交，避免仓库持续膨胀：
+#   git rm --cached bsp_tools/dist/旧版本.exe
+
+# ===== 运行时生成的文件（与 exe 同目录，含本机路径与使用记录）=====
+config.ini
+favorites.json
+path_bookmarks.json
+adb_commands.log
+sitepack/
+crash.log
+crash.log.old
+config.ini.tmp
+
+# ===== 开发自查产物 =====
+# 截图目录按前缀忽略（shots / shots_data / shots_min / shots_shell …）
+devtools/shots*/
+# 临时脚本用 _ 前缀，正式的自查脚本是 check_*.py / verify_*.py，要进仓库
+devtools/_*
+_*.tmp
+_commitmsg.txt
+
+# ===== 编辑器 / 系统 =====
+.idea/
+.vscode/
+*.iml
+Thumbs.db
+desktop.ini

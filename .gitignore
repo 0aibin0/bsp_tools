@@ -14,11 +14,16 @@ build/
 *.pkg
 # onedir 目录版：140 个文件、95MB，只在本地产出给固定工位用，不进仓库
 *_onedir/
+# 注意：onedir 的产物目录现在就叫 DisplayTools/（exe 名不带版本号），
+# 里面是依赖文件；单文件其实是 dist/DisplayTools.exe，两者同名不冲突。
+# 它同样不进仓库——只提交那个单文件 exe。
+bsp_tools/dist/DisplayTools/
 *.spec.bak
 
-# 仓库里只保留最新版本的 exe（bsp_tools/dist/DisplayTools_v3.1.2.exe）。
+# 仓库里只保留最新版本的 exe，且文件名不带版本号（bsp_tools/dist/DisplayTools.exe）。
 # 以后出新版本时，请删掉旧 exe 再提交，避免仓库持续膨胀：
 #   git rm --cached bsp_tools/dist/旧版本.exe
+# 「检查更新」就是从 bsp_tools/dist 里取这个文件（见 update_check.repo_asset）。
 
 # ===== 运行时生成的文件（与 exe 同目录，含本机路径与使用记录）=====
 config.ini

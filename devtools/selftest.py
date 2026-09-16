@@ -29,6 +29,14 @@ FAILURES = []
 CHECKS = [0]
 
 
+class _QuietHandler(__import__("http.server", fromlist=["SimpleHTTPRequestHandler"])
+                   .SimpleHTTPRequestHandler):
+    """静音的静态文件服务：自测里起本地 HTTP 时别把请求日志刷到 stderr。"""
+
+    def log_message(self, *args, **kwargs):    # noqa: D102
+        pass
+
+
 def check(label, condition, detail=""):
     CHECKS[0] += 1
     if condition:
@@ -46,6 +54,23 @@ def main():
     window.resize(1480, 920)
     window.show()
     app.processEvents()
+
+    print("\n[0] 侧边栏：快捷操作项放得下")
+    # 快捷操作是个只增不减的清单（命令往下沉就到这儿），项数一多会把侧边栏
+    # 底部的内容顶出去，所以量一下最后一项的底部位置
+    from PyQt5.QtWidgets import QPushButton
+    nav = window.nav
+    nav_buttons = [b for b in nav.findChildren(QPushButton) if b.isVisible()]
+    nav_bottom = max(b.mapTo(nav, b.rect().bottomLeft()).y() for b in nav_buttons)
+    check("侧边栏内容没超出下边界", nav_bottom < nav.height(),
+          "底部 {} / 侧边栏高 {}".format(nav_bottom, nav.height()))
+    check("侧边栏按钮全部可见（没被挤掉）",
+          len(nav_buttons) == len(nav.findChildren(QPushButton)),
+          "{} / {}".format(len(nav_buttons), len(nav.findChildren(QPushButton))))
+    quick_labels = [b.text() for b in nav_buttons]
+    for label in ("remount", "启动参数"):
+        check("快捷操作包含「{}」".format(label), label in quick_labels,
+              str(quick_labels))
 
     print("\n[1] 日志分析：抓取结果 + 过滤 + 等级着色")
     log = LogAnalyzerSection()
@@ -157,15 +182,23 @@ def main():
           perf.cards["fps"].value_label.text())
     check("空输出返回 None", perf._parse("") is None)
 
-    print("\n[5] 命令收藏：增删改 + 持久化")
+    print("\n[5] 命令收藏：增删改 + 持久化 + 与命令面板共用同一份数据")
+    import command_store
+    import command_palette
     fav = window.pages["tools"].sections["favorites"]
+    fpath = fav.store.path
+    backup = None
+    if os.path.exists(fpath):
+        with open(fpath, "r", encoding="utf-8") as handle:
+            backup = handle.read()
+
     before = len(fav.items)
     fav.name_edit.setText("自测命令")
     fav.command_edit.setText("adb shell echo self-test")
     fav.group_combo.setCurrentText("自测")
     fav.save_entry()
     check("新增一条收藏", len(fav.items) == before + 1, str(len(fav.items)))
-    check("收藏写入文件", os.path.exists(os.path.join(ROOT, "bsp_tools", "favorites.json")))
+    check("收藏写入本地文件", os.path.exists(fpath), fpath)
     fav.search_edit.setText("自测命令")
     fav.render_list()
     check("搜索结果 1 条", fav.list_widget.count() == 1, str(fav.list_widget.count()))
@@ -173,11 +206,54 @@ def main():
     fav.render_list()
     check("清空搜索后条目数恢复", fav.list_widget.count() == len(fav.items),
           f"{fav.list_widget.count()} vs {len(fav.items)}")
-    # 清理：删掉自测条目
-    idx = next(i for i, it in enumerate(fav.items) if it['name'] == "自测命令")
-    fav.items.pop(idx)
-    fav.save()
-    check("清理自测数据", len(fav.items) == before, str(len(fav.items)))
+
+    # ---- 命令面板与命令收藏用的是同一份数据 ----
+    check("收藏页与命令面板同一个 store",
+          fav.store is command_store.store(), "不是同一个实例")
+
+    def fake_ask(title, label, default):
+        return ("面板命令", True) if "名字" in label else ("调试", True)
+
+    dlg = command_palette.CommandPaletteDialog(fav.store, None, ask=fake_ask)
+    dlg.filter("self-test")
+    check("面板搜得到收藏页里加的命令",
+          dlg.listing.count() >= 1 and "self-test" in dlg.current_command(),
+          f"count={dlg.listing.count()} cur={dlg.current_command()!r}")
+
+    chosen = []
+    dlg.commandChosen.connect(lambda command, label: chosen.append(command))
+    dlg.run_current()
+    check("面板回车执行选中的命令",
+          chosen and chosen[0] == "adb shell echo self-test", str(chosen))
+
+    dlg.search.setText("adb shell echo from-palette")
+    added, saved_name = dlg.save_current()
+    check("面板「存为收藏」写入本地文件", added, str(added))
+    reread = command_store.CommandStore(fpath)
+    check("新命令确实落盘",
+          any(item["command"] == "adb shell echo from-palette" for item in reread.items),
+          str([item["command"] for item in reread.items][-3:]))
+    fav.reload()
+    check("收藏页立刻看到面板新增的命令",
+          any(item["command"] == "adb shell echo from-palette" for item in fav.items),
+          str(len(fav.items)))
+    again, _ = dlg.save_current()
+    check("同一条命令不会重复收藏", again is False, str(again))
+
+    # ---- 清理：删掉自测条目并恢复原文件 ----
+    for command in ("adb shell echo self-test", "adb shell echo from-palette"):
+        index = fav.store.find_by_command(command)
+        if index is not None:
+            fav.store.remove(index)
+    check("清理自测数据", fav.store.find_by_command("adb shell echo self-test") is None,
+          str(len(fav.items)))
+    if backup is None:
+        if os.path.exists(fpath):
+            os.remove(fpath)
+    else:
+        with open(fpath, "w", encoding="utf-8") as handle:
+            handle.write(backup)
+    fav.reload()
 
     print("\n[6] 主窗口导航与状态栏")
     for key in ("tools", "shell", "initcode", "lk2kernel", "kernel2lk", "lk2bat"):
@@ -333,7 +409,8 @@ def main():
         display.reset_timing()
         app.processEvents()
 
-        # 收藏夹执行也不跳转
+        # 收藏夹执行也不跳转。这条临时命令直接落在共享 store 上，用完删掉，
+        # 不经过 store.add（免得写盘污染真实 favorites.json）。
         fav = tools_page_obj.sections["favorites"]
         fav.items.append({"group": "自测", "name": "路由测试",
                           "command": "adb shell echo hi"})
@@ -345,7 +422,6 @@ def main():
         check("收藏夹执行后仍停在常用工具页",
               window.nav.current_key() == "tools", str(window.nav.current_key()))
         fav.items.pop()
-        fav.save()
         fav.render_list()
 
         # 模块共享同一个 runner（输出面板只有一份）
@@ -700,6 +776,122 @@ def main():
         content = open(export_path, encoding="utf-8").read()
         check("导出内容与视图一致", "line-a" in content and "line-b" in content, content[:60])
         os.remove(export_path)
+
+    print("\n[15] 检查更新：版本比较 + 附件挑选 + 真下载")
+    import update_check
+    check("解析 v3.2.13", update_check.parse_version("v3.2.13") == (3, 2, 13),
+          str(update_check.parse_version("v3.2.13")))
+    check("解析 3.2.13（不带 v）", update_check.parse_version("3.2.13") == (3, 2, 13))
+    check("解析垃圾返回 None", update_check.parse_version("main") is None)
+    check("3.2.13 比 3.2.12 新", update_check.is_newer("v3.2.13", "v3.2.12") is True)
+    check("同版本不算新", update_check.is_newer("v3.2.12", "v3.2.12") is False)
+    asset = update_check.pick_asset([
+        {"name": "README.txt", "size": 10, "url": "u1", "browser_download_url": "b1"},
+        {"name": "DisplayTools.zip", "size": 20, "url": "u2", "browser_download_url": "b2"},
+        {"name": "DisplayTools.exe", "size": 1024, "url": "u3", "browser_download_url": "b3"}])
+    check("优先挑 DisplayTools.exe", asset and asset["name"] == "DisplayTools.exe",
+          str(asset))
+    check("没有 exe 时退到 zip",
+          update_check.pick_asset([{"name": "a.txt"}, {"name": "DisplayTools.zip"}])["name"]
+          == "DisplayTools.zip")
+    check("空附件列表返回 None", update_check.pick_asset([]) is None)
+    check("下载文件名带版本号",
+          update_check.default_download_name("v3.2.13", {"name": "DisplayTools.exe"})
+          == "DisplayTools_v3.2.13.exe",
+          update_check.default_download_name("v3.2.13", {"name": "DisplayTools.exe"}))
+    check("文件名已含版本就不重复加",
+          update_check.default_download_name("v3.2.13", {"name": "DisplayTools_v3.2.13.exe"})
+          == "DisplayTools_v3.2.13.exe")
+    check("大小格式化", update_check.human_size(1536) == "1.5 KB",
+          update_check.human_size(1536))
+
+    # 仓库兜底：contents 目录列表里挑 exe（没建 Release 时走这条路）
+    listing = [
+        {"name": "notes.txt", "path": "bsp_tools/dist/notes.txt", "size": 3, "url": "u0"},
+        {"name": "DisplayTools_v3.1.0.exe", "path": "bsp_tools/dist/DisplayTools_v3.1.0.exe",
+         "size": 100, "url": "u1"},
+        {"name": "DisplayTools.exe", "path": "bsp_tools/dist/DisplayTools.exe",
+         "size": 200, "url": "u2"},
+    ]
+    picked = update_check._pick_from_listing(listing)
+    check("仓库目录列表优先挑不带版本号的 exe",
+          picked and picked["name"] == "DisplayTools.exe" and picked.get("from_repo"),
+          str(picked))
+    check("目录里没有 exe 时返回 None",
+          update_check._pick_from_listing([{"name": "a.txt"}]) is None)
+
+    repo_file = {"name": "DisplayTools.exe", "path": "bsp_tools/dist/DisplayTools.exe",
+                 "size": 1024, "url": "https://api.github.com/x", "from_repo": True}
+    url, headers = update_check.download_target(repo_file)
+    check("仓库文件走 contents API + raw", url == "https://api.github.com/x"
+          and headers["Accept"] == "application/vnd.github.raw", str(headers))
+    rel_url, rel_headers = update_check.download_target(
+        {"name": "DisplayTools.exe", "browser_download_url": "https://example/b.exe",
+         "url": "https://api.github.com/y"})
+    check("Release 附件默认走 browser_download_url（无 token）",
+          rel_url == "https://example/b.exe"
+          and rel_headers["Accept"] == "application/octet-stream", rel_url)
+
+    # 真下载：本地起一个 HTTP 服务，走完整的 download_asset 流程
+    import threading
+    import http.server
+    import functools
+    import tempfile
+    serve_dir = tempfile.mkdtemp(prefix="dt-upd-")
+    payload = os.urandom(220 * 1024)
+    src = os.path.join(serve_dir, "DisplayTools.exe")
+    with open(src, "wb") as handle:
+        handle.write(payload)
+    handler = functools.partial(_QuietHandler, directory=serve_dir)
+    server = http.server.HTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    local_url = "http://127.0.0.1:{}/DisplayTools.exe".format(server.server_port)
+    target = os.path.join(serve_dir, "out", "DisplayTools_v9.9.9.exe")
+    seen = []
+    try:
+        saved = update_check.download_asset(
+            {"name": "DisplayTools.exe", "url": local_url,
+             "browser_download_url": local_url, "size": len(payload)},
+            target, progress=lambda done, total: seen.append((done, total)))
+        check("附件下载成功", os.path.exists(saved), saved)
+        check("下载内容与源文件一致",
+              open(saved, "rb").read() == payload, "字节不一致")
+        check("进度回调拿到了总长度", seen and seen[-1][1] == len(payload),
+              str(seen[-1:]))
+        check("没有留下 .part 残留", not os.path.exists(target + ".part"))
+    except Exception as exc:                                # noqa: BLE001
+        check("附件下载成功", False, "{}: {}".format(type(exc).__name__, exc))
+    finally:
+        server.shutdown()
+        import shutil
+        shutil.rmtree(serve_dir, ignore_errors=True)
+
+    # 主窗口：发现新版本时给出「下载新版本」入口（不联网，用假结果驱动）
+    import info_dialog
+    window._update_checker = type("FakeChecker", (), {"result": {
+        "tag": "v9.9.9",
+        "asset": {"name": "DisplayTools.exe", "size": 1024,
+                  "url": "", "browser_download_url": ""},
+        "notes": "- 自测用的更新说明",
+        "html_url": "https://example.invalid/releases/tag/v9.9.9"}})()
+    opened = []
+    original_exec = info_dialog.InfoDialog.exec_
+    info_dialog.InfoDialog.exec_ = lambda self: opened.append(self)
+    try:
+        window._offer_update("发现新版本 v9.9.9（当前 {}）".format(theme.APP_VERSION))
+    finally:
+        info_dialog.InfoDialog.exec_ = original_exec
+    check("发现新版本会弹出更新说明框", len(opened) == 1, str(len(opened)))
+    if opened:
+        labels = [label for label, _btn in opened[0]._action_buttons]
+        text = opened[0].view.toPlainText()
+        check("更新框里有「下载新版本」和「打开发布页」",
+              "下载新版本" in labels and "打开发布页" in labels, str(labels))
+        check("说明里带附件名与大小", "DisplayTools.exe" in text and "1.0 KB" in text,
+              text[:120])
+        check("说明里交代了保存路径与覆盖风险",
+              "保存到" in text and "覆盖" in text, text[:160])
+    window._update_checker = None
 
     # 收尾
     window.pages["tools"].stop_background()

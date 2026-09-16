@@ -150,12 +150,8 @@ class ShellToolsPage(BaseToolPage, Ui_ShellTools):
         self.debug_printk_level.setCurrentText('8')
 
     def _setup_connections(self):
-        # adb（devices / root / debugfs / reboot 四个按钮已按 func-list 精简）
-        self.adb_remount.clicked.connect(self.on_remount)
-        self.adb_wm_size.clicked.connect(self.on_wm_size)
-        self.adb_cmdline.clicked.connect(self.on_cmdline)
-        self.adb_dumpsys.clicked.connect(self.on_dumpsys)
-        self.adb_deviceinfo.clicked.connect(self.on_deviceinfo)
+        # adb 卡已整块下线：wm size / dumpsys / density 搬到常用工具页的显示调试，
+        # device info 归设备信息模块，其余命令在侧边栏快捷操作
         # Download Mode
         self.dl_autodloader.clicked.connect(self.adbrebootautodloader_fun)
         self.dl_edl.clicked.connect(self.on_edl)
@@ -659,9 +655,11 @@ class ShellToolsPage(BaseToolPage, Ui_ShellTools):
         self._exec_with_result('adb shell dmesg', "dmesg 抓取完成")
 
     def on_cmdline(self):
+        """读内核启动参数（按钮已移到侧边栏「快捷操作」，方法保留）。"""
         self._exec_with_result('adb shell cat /proc/cmdline', "cmdline 获取完成")
 
     def on_remount(self):
+        """重新挂载为可写（按钮已移到侧边栏「快捷操作」，方法保留）。"""
         self._exec_with_result('adb remount', "remount 完成")
 
     def _input_with_history(self, title, label_text, history_key, placeholder='', max_items=10):

@@ -11,7 +11,7 @@
 （异常守护与电池调试按 func-list 下线，见下方 SECTIONS 注释）
 """
 
-from PyQt5.QtCore import Qt, QSize
+from PyQt5.QtCore import Qt, QSize, QEvent
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                              QStackedWidget, QButtonGroup, QFrame, QScrollArea,
                              QSizePolicy, QSplitter)
@@ -46,6 +46,24 @@ SECTIONS = [
     ("files", "文件管理", "folder", FileManagerSection),
     ("favorites", "命令收藏", "star", FavoritesSection),
 ]
+
+
+class _SectionStack(QStackedWidget):
+    """QStackedWidget 默认按「所有页面里最高的那个」报尺寸提示。
+
+    本页 9 个模块高度差很大（最高 763，当前页往往只要 691），于是滚动区的
+    内容区被最高的那个撑高，切到任何模块都会多出一条纵向滚动条。这里改成
+    只按当前页面的最小尺寸提示计算，当前页放得下就不出滚动条；确实放不下
+    （窗口被拖得很矮）时，minimumSizeHint 仍然是全页最大值，滚动条照常出现。
+    """
+
+    def sizeHint(self):
+        cur = self.currentWidget()
+        return cur.minimumSizeHint() if cur is not None else super().sizeHint()
+
+    def minimumSizeHint(self):
+        cur = self.currentWidget()
+        return cur.minimumSizeHint() if cur is not None else super().minimumSizeHint()
 
 
 class CommonToolsPage(BaseToolPage):
@@ -127,9 +145,15 @@ class CommonToolsPage(BaseToolPage):
         return self.nav_frame
 
     def _build_content(self):
-        """右侧内容区，套滚动区兜底。"""
+        """右侧内容区，套滚动区兜底。
+
+        注意这里是 **widgetResizable(False) + 手动定尺**：QStackedWidget 的尺寸
+        提示天然按「所有模块里最高的那个」算，交给 QScrollArea 自动伸缩时，切到
+        任意模块都会多出一条纵向滚动条（哪怕当前模块只要 380px）。改成自己按
+        「当前模块的最小需求」和「视口」取大值，放得下就不出滚动条，放不下才出。
+        """
         self.scroll = QScrollArea(self)
-        self.scroll.setWidgetResizable(True)
+        self.scroll.setWidgetResizable(False)
         self.scroll.setFrameShape(QFrame.NoFrame)
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
@@ -140,14 +164,52 @@ class CommonToolsPage(BaseToolPage):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        self.stack = QStackedWidget(inner)
+        self.stack = _SectionStack(inner)
         for key, _label, _icon, section_class in SECTIONS:
             section = section_class(self)
             section.setObjectName(f"section_{key}")
             self.sections[key] = section
             self.stack.addWidget(section)
         layout.addWidget(self.stack)
+        # 视口尺寸变化（窗口缩放）和内容需求变化（模块运行后长出结果行）都要重算；
+        # 手动定尺意味着 QScrollArea 不会再自动帮我们追内容，这两个事件就是触发点
+        self._fitting = False
+        self.scroll.viewport().installEventFilter(self)
+        inner.installEventFilter(self)
+        self.stack.installEventFilter(self)
         return self.scroll
+
+    def eventFilter(self, obj, event):
+        if event.type() in (QEvent.Resize, QEvent.LayoutRequest):
+            if obj in (self.scroll.viewport(), self.scroll.widget(), self.stack):
+                self._fit_content()
+        return super(CommonToolsPage, self).eventFilter(obj, event)
+
+    def _fit_content(self):
+        """内容区定尺：宽度/高度取「当前模块需求」与「视口可用」的较大者。
+
+        用 maximumViewportSize()（不含滚动条的那份尺寸）而不是实际视口尺寸计算，
+        避免「出滚动条→视口变小→再算一次」的来回抖动。
+        """
+        if self._fitting:
+            return
+        self._fitting = True
+        try:
+            inner = self.scroll.widget()
+            if inner is None:
+                return
+            avail = self.scroll.maximumViewportSize()
+            cur = self.stack.currentWidget()
+            if cur is None:
+                inner.resize(avail)
+                return
+            need = cur.minimumSizeHint()
+            want = QSize(max(avail.width(), need.width()),
+                         max(avail.height(), need.height()))
+            if inner.size() != want:
+                inner.resize(want)
+        finally:
+            self._fitting = False
 
     @staticmethod
     def _refresh_icon(button, icon_name, checked):
@@ -195,6 +257,9 @@ class CommonToolsPage(BaseToolPage):
         if section is None:
             return
         self.stack.setCurrentWidget(section)
+        # 切换模块后内容区高度需求变了，重算滚动区尺寸（见 _fit_content）
+        self.stack.updateGeometry()
+        self._fit_content()
         btn = self._buttons.get(key)
         if btn is not None and not btn.isChecked():
             btn.setChecked(True)

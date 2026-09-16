@@ -20,9 +20,12 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QLabel,
 
 import app_config
 import app_runtime
+import command_palette
+import command_store
 import info_dialog
 import theme
 import toolchain
+import ui_widgets
 import update_check
 from sidebar import Sidebar
 
@@ -50,26 +53,8 @@ PAGE_DEFS = [
      LkToBatPage, "转换工具", "bat"),
 ]
 
-SHELL_QUICK_COMMANDS = [
-    ("列出设备", "adb devices"),
-    ("获取 root", "adb root"),
-    ("重新挂载", "adb remount"),
-    ("挂载 debugfs", "adb shell mount -t debugfs none /d"),
-    ("重启设备", "adb reboot"),
-    ("进入 bootloader", "adb reboot bootloader"),
-    ("查看分辨率", "adb shell wm size"),
-    ("查看屏幕密度", "adb shell wm density"),
-    ("查看启动参数", "adb shell cat /proc/cmdline"),
-    ("显示子系统信息", "adb shell dumpsys display"),
-    ("内核日志", "adb shell dmesg"),
-    ("printk 等级", "adb shell cat /proc/sys/kernel/printk"),
-    ("CPU 温度", "adb shell cat /sys/class/thermal/thermal_zone0/temp"),
-    ("电池状态", "adb shell dumpsys battery"),
-    ("GPIO 状态", "adb shell cat /d/gpio"),
-    ("输入设备列表", "adb shell cat /proc/bus/input/devices"),
-    ("系统属性", "adb shell getprop | grep ro.product"),
-    ("内存详情", "adb shell cat /proc/meminfo | head -5"),
-]
+# 命令面板的可选命令清单已并入 command_store（与「常用工具 · 命令收藏」
+# 共用 favorites.json）：面板里能搜到、能新增、能改，见 show_command_palette()。
 
 
 def resource_path(*parts):
@@ -382,7 +367,9 @@ class MainWindow(QMainWindow):
             ("devices", "列出设备", "terminal"),
             ("sitepack", "抓现场包", "package"),
             ("root", "获取 root", "refresh"),
+            ("remount", "remount", "upload"),
             ("debugfs", "挂载 debugfs", "folder"),
+            ("cmdline", "启动参数", "file"),
             ("screencap", "截图并保存", "monitor"),
             ("reboot", "重启设备", "history"),
         ])
@@ -404,7 +391,9 @@ class MainWindow(QMainWindow):
         command, label = {
             "devices": ("adb devices", "列出设备"),
             "root": ("adb root", "获取 root"),
+            "remount": ("adb remount", "remount"),
             "debugfs": ("adb shell mount -t debugfs none /d", "挂载 debugfs"),
+            "cmdline": ("cat /proc/cmdline", "读取启动参数"),
             "reboot": ("adb reboot", "重启设备"),
         }.get(key, (None, None))
         if command is None:
@@ -589,61 +578,38 @@ class MainWindow(QMainWindow):
     # ================= 命令面板 =================
 
     def show_command_palette(self):
-        from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QLineEdit, QListWidget,
-                                     QListWidgetItem, QLabel)
-        from PyQt5.QtCore import QSize
+        """命令面板（Ctrl+K）。
 
-        dlg = QDialog(self)
-        dlg.setWindowTitle("命令面板")
-        dlg.setMinimumSize(560, 440)
-        dlg.setStyleSheet(theme.build_stylesheet())
-
-        layout = QVBoxLayout(dlg)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(10)
-
-        hint = QLabel("输入关键字过滤，回车在本页 Shell 工具中执行该命令", dlg)
-        hint.setObjectName("pageSubtitle")
-        layout.addWidget(hint)
-
-        search = QLineEdit(dlg)
-        search.setPlaceholderText("搜索命令…（例如 root / gpio / 温度）")
-        search.setMinimumHeight(34)
-        layout.addWidget(search)
-
-        listing = QListWidget(dlg)
-        listing.setIconSize(QSize(16, 16))
-        layout.addWidget(listing, 1)
-
-        shell_page = self.pages.get("shell")
-
-        def fill(keyword=""):
-            listing.clear()
-            keyword = keyword.strip().lower()
-            for label, command in SHELL_QUICK_COMMANDS:
-                if keyword and keyword not in label.lower() and keyword not in command.lower():
-                    continue
-                item = QListWidgetItem(theme.icon("terminal", theme.PRIMARY, 16, 1.6),
-                                       f"{label}    ·    {command}")
-                item.setData(Qt.UserRole, (label, command))
-                listing.addItem(item)
-            if listing.count():
-                listing.setCurrentRow(0)
-
-        def run_current():
-            item = listing.currentItem()
-            if item is None:
-                return
-            label, command = item.data(Qt.UserRole)
-            dlg.accept()
-            self._run_on_shell(command, label)
-
-        search.textChanged.connect(fill)
-        search.returnPressed.connect(run_current)
-        listing.itemActivated.connect(lambda _i: run_current())
-        fill()
-        search.setFocus()
+        数据源和「常用工具 · 命令收藏」是同一份 favorites.json（command_store）：
+        面板里搜得到收藏页里加的命令；面板里现敲的命令也能直接存进收藏。
+        """
+        dlg = command_palette.CommandPaletteDialog(command_store.store(), self)
+        dlg.commandChosen.connect(self._run_on_shell)
+        dlg.manageRequested.connect(self._open_favorites)
+        dlg.commandSaved.connect(self._on_command_saved)
         dlg.exec_()
+        return dlg
+
+    def _on_command_saved(self, name, added):
+        if added:
+            self.toast(f"已收藏命令「{name}」", "success")
+        else:
+            self.toast("这条命令已经在收藏里了", "info")
+        self.on_commands_changed()
+
+    def _open_favorites(self):
+        """跳到常用工具的「命令收藏」页。"""
+        self.nav.select("tools")
+        page = self.pages.get("tools")
+        if page is not None:
+            page.show_section("favorites")
+
+    def on_commands_changed(self):
+        """命令收藏有任何增删改时调用：让命令收藏页刷新，两处始终一致。"""
+        page = self.pages.get("tools")
+        section = getattr(page, "sections", {}).get("favorites") if page else None
+        if section is not None and hasattr(section, "reload"):
+            section.reload()
 
     def _run_on_shell(self, command, label):
         page = self.pages.get("shell")
@@ -670,7 +636,46 @@ class MainWindow(QMainWindow):
 
     def show_changelog(self):
         self._info_box("更新日志",
-                       "v3.2.11 (当前)\n"
+                       "v3.2.13 (当前)\n"
+                       "  - 显示调试收拢显示模式参数：dumpsys display / wm size / wm density\n"
+                       "    从 Shell Tools 的 adb 卡搬进「分辨率 / 密度 / 刷新率」卡片，\n"
+                       "    三行各留「读取 / 应用」，复位收成底下一颗（wm size reset +\n"
+                       "    wm density reset）。三行各挂三颗按钮时行宽 340px，比下拉框\n"
+                       "    内容宽度（112px）还紧，窗口一窄下拉框就被压成「2400×10…」；\n"
+                       "    两按钮后整张卡 324px，任何窗口尺寸下都能完整显示。\n"
+                       "  - Shell Tools 去掉 adb 框（命令都已在侧边栏快捷操作 / 命令面板里），\n"
+                       "    控制区按卡片高度重新配对：GPIO + Download Mode（87/87）、\n"
+                       "    Debug + ylog（155/160）、fastboot flash 整宽，右边只留 Log。\n"
+                       "  - 侧边栏「重新挂载」改叫 remount（和命令名一致，一看就知道敲什么）。\n"
+                       "  - 命令面板（Ctrl+K）与「命令收藏」统一成一份数据（favorites.json）：\n"
+                       "    面板里搜得到收藏页加的命令，面板里现敲的命令也能「存为收藏」\n"
+                       "    直接落盘；多了「管理收藏」跳转，重复命令不会收两遍。\n"
+                       "  - 打包产物统一叫 DisplayTools.exe（不带版本号）：版本号只在\n"
+                       "    theme.APP_VERSION 和 git tag 里；旧的带版本号 spec 全部删掉，\n"
+                       "    只留 DisplayTools.spec（单文件）与 DisplayTools_onedir.spec（目录版）。\n"
+                       "  - 检查更新能直接下载新版本：优先 Release 附件，没有 Release 就\n"
+                       "    从仓库 bsp_tools/dist 里拿提交好的 exe（仓库是公开的，无需 token）。\n"
+                       "    下载到 exe 同目录，文件名带版本号（免得顶掉正在运行的自己，\n"
+                       "    也留着旧版方便回退），下完可一键打开所在文件夹。\n"
+                       "  - 常用工具页修掉「切到任何模块都多一条纵向滚动条」：QStackedWidget\n"
+                       "    的尺寸提示按所有模块里最高的那个算（763px），内容区被撑高。\n"
+                       "    改成按当前模块的需求定尺（放得下就不出滚动条），9 个模块在\n"
+                       "    1360x840 下全部无滚动条。\n"
+                       "  - selftest 从 140 项加到 170 项：命令面板/收藏共用一份数据、\n"
+                       "    更新检查的附件挑选与真实下载（本地 HTTP 服务跑通全流程）。\n\n"
+                       "v3.2.12 (2026-09-16)\n"
+                       "  - remount 与 cmdline 也移到侧边栏「快捷操作」（现在 8 项）：\n"
+                       "    这两个是「随手敲一下」的命令，侧边栏点一下就走，不必先进\n"
+                       "    Shell Tools 页。Shell Tools 的 adb 卡只剩 wm size / dumpsys /\n"
+                       "    device info 三个查询。\n"
+                       "  - adb 卡从 5 个按钮变 3 个后底下空出 68px，顺势把控制区网格按\n"
+                       "    卡片高度重新配对：adb + GPIO（都是 adb shell 查询，87/87）、\n"
+                       "    Debug + ylog（155/164）、Download Mode + fastboot flash\n"
+                       "    （都是刷机相关，87/121）。空白从 68px 降到 43px。\n"
+                       "  - adb 卡三个按钮与 Download Mode 的两个按钮改成撑满整行宽度，\n"
+                       "    不再右边空一截。\n"
+                       "  - selftest 增加侧边栏断言（快捷操作放得下、按钮没被挤掉）。\n\n"
+                       "v3.2.11 (2026-09-16)\n"
                        "  - 修背光节点路径：原来读 /sys/class/leds/lcd-backlight，\n"
                        "    实测 T820 上 /sys/class/leds/ 下只有 mmc0:: / mmc1::，\n"
                        "    该节点根本不存在。正确的是 /sys/class/backlight/panel0-backlight/\n"
@@ -864,7 +869,7 @@ class MainWindow(QMainWindow):
             '  命令收藏   - 常用命令增删改查，双击直接执行',
             '',
             '【Shell Tools】',
-            '  adb        - remount / wm size / cmdline / dumpsys / device info',
+            '  adb        - wm size / dumpsys / device info（其余命令见左侧「快捷操作」）',
             '  Download Mode - UNISOC autodloader、QCOM EDL',
             '  Debug      - 自定义命令、density/dpi、printk 读写',
             '  fastboot   - 分区烧录（erase + flash）、bootloader / reboot',
@@ -872,9 +877,9 @@ class MainWindow(QMainWindow):
             '  GPIO       - 查询 GPIO 状态（留空查全部）',
             '  ylog / APK - 导出日志、安装 APK、投屏',
             '',
-            '  注：adb devices / root / debugfs / reboot 与背光滑块已下线——',
-            '      前三个在侧边栏「快捷操作」和 Ctrl+K 命令面板里都有，',
-            '      背光在常用工具页的「显示调试」模块里。',
+            '  注：侧边栏「快捷操作」是这些命令的常驻入口——',
+            '      adb devices / root / remount / debugfs / reboot / cmdline、截图并保存',
+            '      都在那儿，页面上不再重复放按钮；背光在常用工具页的「显示调试」里。',
             '      func 的 pull（截图+拉取）与系统调试的「重启设备 / 挂载 debugfs」',
             '      同理下线：侧边栏已有同一入口，不再重复。',
             '      Debug 的 push/pull 也下线了——「文件管理」是超集（浏览 + 上传 +',
@@ -939,7 +944,11 @@ class MainWindow(QMainWindow):
     # ================= 更新检查 =================
 
     def check_updates(self):
-        """手动触发一次版本检查（后台线程，失败只提示不弹窗）。"""
+        """手动触发一次版本检查（后台线程，失败只提示不弹窗）。
+
+        查到新版本时，如果 release 里带了可下载的附件，就直接问要不要下载；
+        没有附件（或只有 tag）就退回提示 + 打开发布页。
+        """
         if getattr(self, "_update_checker", None) is not None \
                 and self._update_checker.isRunning():
             self.toast("正在检查更新…", "info", 1500)
@@ -949,13 +958,106 @@ class MainWindow(QMainWindow):
         checker = update_check.UpdateChecker(self)
 
         def done(kind, message):
-            self.toast(message, "success" if kind == "ok" else
-                       ("warning" if kind == "newer" else "error"), 5200)
+            if kind == "newer":
+                self._offer_update(message)
+            else:
+                self.toast(message, "success" if kind == "ok" else "error", 5200)
 
         checker.finished_with.connect(done)
         checker.finished.connect(lambda: setattr(self, "_update_checker", None))
         self._update_checker = checker
         checker.start()
+
+    def _offer_update(self, message):
+        """发现新版本：列出说明和附件大小，给「下载 / 打开发布页」两个按钮。"""
+        result = getattr(self._update_checker, "result", {}) or {}
+        tag = result.get("tag") or ""
+        asset = result.get("asset") or {}
+        lines = [message, ""]
+        if asset:
+            where = "仓库" if result.get("source") == "repo" else "Release 附件"
+            if asset.get("path"):
+                where = "{}里的 {}".format(where, asset["path"])
+            lines.append("下载来源：{}".format(where))
+            lines.append("附件：{}（{}）".format(
+                asset.get("name") or "-", update_check.human_size(asset.get("size"))))
+            lines.append("保存到：{}".format(os.path.join(
+                update_check.download_dir(),
+                update_check.default_download_name(tag, asset))))
+            lines.append("下载文件名带版本号：正在运行的 DisplayTools.exe 是锁着的，"
+                         "覆盖不了，也留着它方便回退。")
+        else:
+            lines.append("这个版本没有可下载的安装包，点「打开发布页」在浏览器里下载。")
+        if result.get("notes"):
+            lines.extend(["", "本次更新说明：", result["notes"].strip()])
+        lines.extend(["", "发布页：{}".format(result.get("html_url") or update_check.releases_url())])
+
+        actions = [("打开发布页", self._open_release)]
+        if asset:
+            actions.insert(0, ("下载新版本", lambda: self.download_update(result)))
+        dialog = info_dialog.InfoDialog("发现新版本 {}".format(tag or ""),
+                                        chr(10).join(lines), self,
+                                        width=760, height=480, actions=actions)
+        dialog.exec_()
+
+    def _open_release(self):
+        result = getattr(self._update_checker, "result", {}) or {}
+        QDesktopServices.openUrl(QUrl(result.get("html_url")
+                                      or update_check.releases_url()))
+        return False
+
+    def download_update(self, result=None):
+        """后台把新版本下载到本地（先写 .part，好了再改名）。"""
+        result = result or (getattr(self, "_update_checker", None).result or {})
+        asset = result.get("asset") or {}
+        if not asset:
+            self.toast("这个版本没有可下载的附件，请打开发布页下载", "warning", 5000)
+            return False
+        tag = result.get("tag") or ""
+        dest = os.path.join(update_check.download_dir(),
+                            update_check.default_download_name(tag, asset))
+        if getattr(self, "_update_downloader", None) is not None \
+                and self._update_downloader.isRunning():
+            self.toast("正在下载…", "info", 1500)
+            return True
+
+        downloader = update_check.UpdateDownloader(asset, dest, self)
+        self._update_downloader = downloader
+        self._download_reported = 0
+
+        def on_progress(done, total):
+            # 每 10% 报一次，免得浮层刷屏
+            if not total:
+                return
+            percent = int(done * 100 / total)
+            if percent >= self._download_reported + 10 or percent >= 100:
+                self._download_reported = percent
+                self.toast("正在下载新版本… {}%".format(percent), "info", 1500)
+
+        def on_done(kind, message):
+            self._update_downloader = None
+            if kind != "ok":
+                self.toast(message, "error", 6000)
+                return
+            self.toast("新版本已下载：{}".format(os.path.basename(message)), "success", 6000)
+            dialog = info_dialog.InfoDialog(
+                "下载完成",
+                "新版本已保存到：\n{}\n\n"
+                "用法：退出当前程序，把新文件改名成 DisplayTools.exe 覆盖旧的即可"
+                "（旧文件建议先留着，新版本起不来能马上回退）。".format(message),
+                self, width=620, height=360,
+                actions=[("打开所在文件夹", lambda: (self._open_folder(message), False)[1])])
+            dialog.exec_()
+
+        downloader.progress.connect(on_progress)
+        downloader.finished_with.connect(on_done)
+        downloader.start()
+        self.toast("开始下载：{}".format(os.path.basename(dest)), "info", 3000)
+        return True
+
+    @staticmethod
+    def _open_folder(path):
+        QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.dirname(os.path.abspath(path))))
 
 
 def main():

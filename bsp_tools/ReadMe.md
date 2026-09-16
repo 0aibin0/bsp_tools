@@ -13,7 +13,7 @@ python mainwindow.py
 | 页面 | 说明 |
 | --- | --- |
 | 常用工具 | 9 个模块，见下表 |
-| Shell Tools | adb（remount / wm size / cmdline / dumpsys / device info）、fastboot 烧录、Debug 自定义命令与 density/printk、func 功能键、GPIO、ylog、APK、投屏 |
+| Shell Tools | fastboot 烧录、Debug 自定义命令与 density/printk、func 功能键、GPIO、Download Mode、ylog、APK、投屏（adb 类命令都在侧边栏「快捷操作」和 Ctrl+K 命令面板里，页面不再重复摆一份） |
 | Initcode Builder | 寄存器读写描述 ↔ initcode 字节序列（正反向） |
 | LK → Kernel | LK 十六进制序列 → 内核格式 |
 | Kernel → LK | 内核十六进制序列 → LK 格式 |
@@ -42,9 +42,20 @@ python mainwindow.py
 > 显示调试里的 DCS 读写节点、ESD 重置、Panel 参数查询卡片，以及触摸调试里的
 > 输入设备枚举按钮也一并移除（都是纯查询或按 ESD 需求砍掉的）。
 
+**「侧边栏有 = 页面上就是重复入口」**：这是本项目一贯的取舍原则。侧边栏
+「快捷操作」是常驻入口，凡是在那儿有的命令，页面上都不再重复放一份按钮——
+`adb devices / root / remount / debugfs / reboot / cmdline` 与「截图并保存」都已经
+从 Shell Tools 移到了快捷操作（8 项）。加新按钮前先看侧边栏有没有。
+
 **布局**：常用工具页是「左侧模块导航 + 中间模块内容 + **右侧执行结果面板**」，
 Shell Tools 是「左侧控制区（2 列网格）+ **右侧竖向 Log 面板**」。
 两处右侧面板都可以拖拽调宽窄或收起。
+
+> Shell Tools 控制区的网格是**按卡片高度配对**的（87/87、155/164、87/121），
+> 目的是让每行左右两张卡等高、少留空白。改动卡片里的控件数会改变自然高度，
+> 配错就会出现一大块空白——加按钮/删按钮后跑 `check_layout.py`。
+> 卡片里的按钮行也不要只按 sizeHint 排，末尾加 `addStretch` 或给 stretch
+> 让它撑满，否则右边会空一截。
 
 **多设备**：状态栏下拉框选设备，选定后所有命令（含 QProcess 跑的）自动带 `-s`；
 不选则用 adb 默认设备。选择会记住。
@@ -56,9 +67,23 @@ Shell Tools 是「左侧控制区（2 列网格）+ **右侧竖向 Log 面板**�
 ## 数据文件（与程序同目录）
 
 - `config.ini` — 输入框记忆、adb push/pull 设备路径历史（沿用 v3.0.x 键名）
-- `favorites.json` — 命令收藏夹
+- `favorites.json` — 命令收藏夹；**Ctrl+K 命令面板和「常用工具 · 命令收藏」
+  页共用这一份**（`command_store.py` 是唯一数据源）
 - `path_bookmarks.json` — 设备路径书签
 - `adb_commands.log` — 命令输出日志
+
+## 版本与更新
+
+- 版本号只在 `theme.APP_VERSION` 和 git tag（`v3.2.13`）里，**exe 文件名不带版本号**。
+- 发版流程：改 `APP_VERSION` → 跑 `run_checks.bat` → `DisplayTools.spec` 打包 →
+  `git rm` 旧 exe、提交新 exe → `git tag vX.Y.Z` → 推分支**和** tag（检查更新靠 tag）。
+- 「检查更新」查的顺序：`/releases/latest`（能拿到说明和附件）→ 没有 Release 就
+  退回 tags API 比版本号 → 下载时优先 Release 附件，没有就从仓库
+  `bsp_tools/dist` 里取提交好的 exe（仓库是公开的，不需要 token）。
+  下载文件名带版本号（`DisplayTools_vX.Y.Z.exe`），不覆盖正在运行的自己，旧版
+  留着以便回退。
+- 仓库若是私有：在 `config.ini` 里加 `update_token = ghp_xxx`（未带 token 的
+  API 调用对私有仓库返回 404）；`update_repo` 可改仓库（默认 `0aibin0/bsp_tools`）。
 
 ## 开发自查
 
@@ -66,7 +91,7 @@ Shell Tools 是「左侧控制区（2 列网格）+ **右侧竖向 Log 面板**�
 bat 是 GBK 代码页，脚本里写中文会被 cmd 解析器撕碎）：
 
 ```bash
-run_checks.bat            # 离线检查 10 项：自测 / 主题 / 时序 / 多设备 / initcode / 布局 / 换行 / 面板宽度 / 控件 / 冒烟
+run_checks.bat            # 离线检查 11 项：自测 / 主题 / 时序 / 多设备 / initcode / 布局 / 换行 / 面板宽度 / 说明框 / 控件 / 冒烟
 run_checks.bat device     # 再加上真机相关的 4 项（要连板子）
 ```
 
@@ -77,7 +102,7 @@ run_checks.bat device     # 再加上真机相关的 4 项（要连板子）
 .venv\Scripts\python.exe devtools\check_layout.py      # 布局健康检查：多种窗口尺寸下检测重叠/压缩/越界
 .venv\Scripts\python.exe devtools\check_panel_width.py # 右侧两个面板的文本框必须都是 240px（固定，不随窗口变）
 .venv\Scripts\python.exe devtools\check_wraplabel.py   # 自动换行标签高度是否够（inspect_ui 的盲区）
-.venv\Scripts\python.exe devtools\selftest.py          # 逻辑自测 110 项（不需要连接设备）
+.venv\Scripts\python.exe devtools\selftest.py          # 逻辑自测 170 项（不需要连接设备）
 .venv\Scripts\python.exe devtools\check_theme.py       # 浅色/深色令牌完整性与残留检查
 .venv\Scripts\python.exe devtools\check_timing.py      # 时序/带宽公式 + 文本解析 + DCS 包构造
 .venv\Scripts\python.exe devtools\check_multidevice.py # 多设备 -s 注入（保证不会出现两个 -s）
@@ -176,17 +201,30 @@ Shell Tools 改 `shell_tools.LOG_PANEL_WIDTH`。
 
 ## 打包
 
+产物固定叫 `bsp_tools/dist/DisplayTools.exe`（**不带版本号**）：版本号只在
+`theme.APP_VERSION` 和 git tag 里，文件名里不重复一份。
+
 ```bash
-pyinstaller DisplayTools_v3.1.2.spec
+cd bsp_tools
+..\.venv\Scripts\python.exe -m PyInstaller --noconfirm --clean DisplayTools.spec
 ```
 
-spec 中已包含 `icon_img/` 资源；旧版命令行方式：
+固定工位想秒开可以用目录版（冷启动 0.91s vs 单文件版 1.79s，代价是 140 个
+文件、95MB，产物不进仓库）：
 
 ```bash
-pyinstaller --onefile --noconsole --icon=icon_img/main.ico --name DisplayTools_v3.1.2 mainwindow.py
+..\.venv\Scripts\python.exe -m PyInstaller --noconfirm --clean DisplayTools_onedir.spec
+# -> dist/DisplayTools/DisplayTools.exe
+```
+
+spec 中已包含 `icon_img/` 资源；等价命令行方式：
+
+```bash
+pyinstaller --onefile --noconsole --icon=icon_img/main.ico --name DisplayTools mainwindow.py
 ```
 
 > 打包前先关掉正在运行的旧 exe，否则会报 `PermissionError: [WinError 5]`。
+> 仓库里只保留最新版本的 exe，出新版时先 `git rm` 掉旧的那个再提交。
 
 ## 设计说明
 

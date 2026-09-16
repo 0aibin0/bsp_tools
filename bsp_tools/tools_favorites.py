@@ -1,12 +1,11 @@
 """常用工具 · 命令收藏夹
 
-把日常反复敲的 adb 命令存成可点击的快捷项，支持增删改、分组、搜索，
-持久化到程序目录下的 favorites.json。
-"""
+把日常反复敲的 adb 命令存成可点击的快捷项，支持增删改、分组、搜索。
 
-import json
-import os
-import sys
+数据源是 command_store（exe 同目录的 favorites.json）：Ctrl+K 命令面板读的
+也是这一份，两处不再各存一套。改完调 notify_changed()，命令面板下次打开
+就能搜到新命令。
+"""
 
 from PyQt5.QtCore import Qt, QSize
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QListWidget,
@@ -15,50 +14,25 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QListWidget,
 
 import theme
 import ui_widgets as W
-
-
-DEFAULT_FAVORITES = [
-    {"group": "常用", "name": "列出设备", "command": "adb devices"},
-    {"group": "常用", "name": "获取 root", "command": "adb root"},
-    {"group": "常用", "name": "重新挂载", "command": "adb remount"},
-    {"group": "常用", "name": "重启设备", "command": "adb reboot"},
-    {"group": "常用", "name": "挂载 debugfs", "command": "adb shell mount -t debugfs none /d"},
-    {"group": "调试", "name": "dmesg 内核日志", "command": "adb shell dmesg | tail -200"},
-    {"group": "调试", "name": "logcat 错误", "command": "adb logcat -d *:E"},
-    {"group": "调试", "name": "I2C 设备列表", "command": "adb shell ls /sys/bus/i2c/devices/"},
-    {"group": "调试", "name": "GPIO 状态", "command": "adb shell cat /d/gpio"},
-    {"group": "调试", "name": "printk 等级", "command": "adb shell cat /proc/sys/kernel/printk"},
-    {"group": "显示", "name": "屏幕分辨率", "command": "adb shell wm size"},
-    {"group": "显示", "name": "屏幕密度", "command": "adb shell wm density"},
-    {"group": "显示", "name": "显示子系统", "command": "adb shell dumpsys display"},
-    {"group": "显示", "name": "当前背光", "command": "adb shell settings get system screen_brightness"},
-    {"group": "显示", "name": "DCS 回读", "command": "adb shell cat /sys/class/display/dsi0/dcs_read"},
-    {"group": "系统", "name": "启动参数", "command": "adb shell cat /proc/cmdline"},
-    {"group": "系统", "name": "CPU 温度", "command": "adb shell cat /sys/class/thermal/thermal_zone0/temp"},
-    {"group": "系统", "name": "电池状态", "command": "adb shell dumpsys battery"},
-    {"group": "系统", "name": "内存占用", "command": "adb shell cat /proc/meminfo | head -3"},
-    {"group": "系统", "name": "系统属性", "command": "adb shell getprop | grep ro.product"},
-]
-
-
-def favorites_path():
-    if getattr(sys, 'frozen', False):
-        base = os.path.dirname(os.path.abspath(sys.executable))
-    else:
-        base = os.path.dirname(os.path.abspath(__file__))
-    return os.path.join(base, 'favorites.json')
+from command_store import store as store_singleton
 
 
 class FavoritesSection(QWidget):
     """命令收藏夹。"""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, store=None):
+        """store 可注入（测试用）；默认拿进程单例，和命令面板是同一份。"""
         super().__init__(parent)
-        self.items = []
+        self.store = store or store_singleton()
         self.editing_index = None
         self._rendered = []
         self._build_ui()
-        self.load()
+        self.reload()
+
+    @property
+    def items(self):
+        """直接指向共享 store 的清单，页面与命令面板永远是同一份。"""
+        return self.store.items
 
     # ================= 界面 =================
 
@@ -154,7 +128,8 @@ class FavoritesSection(QWidget):
         row.addStretch()
 
         hint = W.heading(
-            "提示：双击左侧条目可直接执行；命令会连同输出显示在 Shell Tools 的日志区。", card)
+            "提示：双击左侧条目直接执行，输出落在右侧「执行结果」面板；这里的收藏"
+            "与 Ctrl+K 命令面板共用同一份 favorites.json。", card)
         hint.setWordWrap(True)
         card.add(hint)
         card.body.addStretch()
@@ -163,27 +138,18 @@ class FavoritesSection(QWidget):
 
     # ================= 数据 =================
 
-    def load(self):
-        path = favorites_path()
-        data = None
-        if os.path.exists(path):
-            try:
-                with open(path, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-            except Exception:
-                data = None
-        if not isinstance(data, list) or not data:
-            data = list(DEFAULT_FAVORITES)
-        self.items = [d for d in data if isinstance(d, dict) and d.get('command')]
+    def reload(self):
+        """从共享 store 重新读一遍（命令面板里新增/删除后也要调）。"""
+        self.store.load()
         self._refresh_groups()
         self.render_list()
 
-    def save(self):
-        try:
-            with open(favorites_path(), 'w', encoding='utf-8') as f:
-                json.dump(self.items, f, ensure_ascii=False, indent=2)
-        except Exception:
-            pass
+    def notify_changed(self):
+        """把改动同步给命令面板（同一进程共享 store，这里只是让面板下次打开刷新）。"""
+        window = self.window()
+        hook = getattr(window, "on_commands_changed", None)
+        if callable(hook):
+            hook()
 
     def _refresh_groups(self):
         current = self.group_filter.currentText()
@@ -202,22 +168,16 @@ class FavoritesSection(QWidget):
         self.group_filter.blockSignals(False)
 
     def render_list(self):
-        keyword = self.search_edit.text().strip().lower()
-        group = self.group_filter.currentText()
-
+        """按搜索框 + 分组过滤渲染。过滤逻辑统一走 store.search，避免两处不一致。"""
         self.list_widget.clear()
         self._rendered = []
-        for index, item in enumerate(self.items):
-            if group and group != "全部分组" and item.get('group') != group:
-                continue
-            if keyword and keyword not in item['name'].lower() \
-                    and keyword not in item['command'].lower():
-                continue
+        for index, item in self.store.search(
+                self.search_edit.text(), self.group_filter.currentText()):
             entry = QListWidgetItem(
                 theme.icon("star", theme.PRIMARY, 16, 1.6),
                 f"{item['name']}\n{item['command']}")
             entry.setData(Qt.UserRole, index)
-            entry.setToolTip(item['command'])
+            entry.setToolTip(f"{item['group']} · {item['command']}")
             self.list_widget.addItem(entry)
             self._rendered.append(index)
         self.count_label.setText(f"{self.list_widget.count()} 条")
@@ -267,11 +227,11 @@ class FavoritesSection(QWidget):
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if confirm != QMessageBox.Yes:
             return
-        self.items.pop(index)
-        self.save()
+        self.store.remove(index)
         self._refresh_groups()
         self.render_list()
         self.clear_editor()
+        self.notify_changed()
 
     def save_entry(self):
         name = self.name_edit.text().strip()
@@ -281,16 +241,19 @@ class FavoritesSection(QWidget):
             QMessageBox.warning(self, "信息不完整", "名称和命令都不能为空")
             return
 
+        existing = self.store.find_by_command(command)
         if self.editing_index is not None and 0 <= self.editing_index < len(self.items):
-            self.items[self.editing_index] = {
-                "group": group, "name": name, "command": command}
+            self.store.update(self.editing_index, name, command, group)
+        elif existing is not None:
+            # 同一条命令不在收藏里放两遍，直接改成新名字
+            self.store.update(existing, name, command, group)
         else:
-            self.items.append({"group": group, "name": name, "command": command})
+            self.store.add(name, command, group)
 
-        self.save()
         self._refresh_groups()
         self.render_list()
         self.clear_editor()
+        self.notify_changed()
         window = self.window()
         if hasattr(window, 'toast'):
             window.toast(f"已保存命令「{name}」", "success")
@@ -307,8 +270,8 @@ class FavoritesSection(QWidget):
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if confirm != QMessageBox.Yes:
             return
-        self.items = [dict(d) for d in DEFAULT_FAVORITES]
-        self.save()
+        self.store.reset()
         self._refresh_groups()
         self.render_list()
         self.clear_editor()
+        self.notify_changed()

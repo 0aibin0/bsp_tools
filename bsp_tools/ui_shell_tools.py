@@ -78,27 +78,29 @@ class Ui_ShellTools(object):
         controls.setContentsMargins(0, 0, 0, 0)
         controls.setSpacing(8)
 
-        # 2 列网格，按「高度配对」摆放：
-        #   左列 adb(155) + DownloadMode(87) + ylog(126) = 368 + 间距
-        #   右列 Debug(189) + GPIO(87) + fastboot(121)  = 397 + 间距
-        # 两列高度只差约 30px，不会像之前那样左列空出一大片。
+        # 2 列网格，按「卡片高度配对」摆放。
+        # adb 卡已下线（查询搬到显示调试/设备信息，命令搬到侧边栏快捷操作），
+        # 剩下 6 张卡的自然高度（约）：GPIO 87 / Debug 155 / ylog 164 /
+        # Download Mode 87 / fastboot flash 121 / func 87 / APK 128。
         self.topGrid = QtWidgets.QGridLayout()
         self.topGrid.setSpacing(8)
         self.topGrid.setObjectName("topGrid")
 
-        self._build_adb_group(self.controlPanel)
         self._build_debug_group(self.controlPanel)
         self._build_download_group(self.controlPanel)
         self._build_gpio_group(self.controlPanel)
         self._build_ylog(self.controlPanel)
         self._build_flash_group(self.controlPanel)
 
-        self.topGrid.addWidget(self.groupBox_4, 0, 0)        # adb
-        self.topGrid.addWidget(self.groupBox_debug, 0, 1)    # Debug
-        self.topGrid.addWidget(self.groupBox_dl, 1, 0)       # Download Mode
-        self.topGrid.addWidget(self.groupBox_gpio, 1, 1)     # GPIO
-        self.topGrid.addWidget(self.groupBox_3, 2, 0)        # ylog
-        self.topGrid.addWidget(self.groupBox_flash, 2, 1)    # fastboot flash
+        # 配对原则：同一行的两张卡自然高度尽量接近，谁也别空一大截
+        #   GPIO + Download Mode （87/87，都是"查一下设备"）
+        #   Debug + ylog         （155/164，差 9px）
+        #   fastboot flash + ???  → flash 与"整宽卡片"不同列，放在下一行整宽
+        self.topGrid.addWidget(self.groupBox_gpio, 0, 0)     # GPIO
+        self.topGrid.addWidget(self.groupBox_dl, 0, 1)       # Download Mode
+        self.topGrid.addWidget(self.groupBox_debug, 1, 0)    # Debug
+        self.topGrid.addWidget(self.groupBox_3, 1, 1)        # ylog
+        self.topGrid.addWidget(self.groupBox_flash, 2, 0, 1, 2)   # fastboot flash 整宽
 
         self.topGrid.setColumnStretch(0, 10)
         self.topGrid.setColumnStretch(1, 11)
@@ -146,39 +148,17 @@ class Ui_ShellTools(object):
     # ---------- 各分组构建（只负责建控件，放置由 setupUi 决定）----------
 
     def _build_adb_group(self, parent):
-        """adb 常用命令。
+        """**已下线**：原来放 wm size / dumpsys / device info。
 
-        原本 9 个按钮（含 adb devices / adb root / debugfs / adb reboot）按
-        func-list 精简掉 4 个：设备列表与 root 在侧边栏「快捷操作」和 Ctrl+K
-        命令面板里都有，debugfs 挂在系统调试模块，reboot 属于危险操作、不该
-        挨着常用按钮放。剩下 5 个排 2 行。
+        三个查询都搬走了：
+        - wm size、dumpsys display → 常用工具页「显示调试」（分辨率 / 密度 /
+          刷新率 卡片 + Panel / 显示信息 卡片）
+        - device info → 常用工具页「设备信息」模块
+        - remount / cmdline / devices / root / debugfs / reboot → 侧边栏快捷操作
+
+        保留这个方法是为了不留死引用（setupUi 不再调用它）。
         """
-        self.groupBox_4, adb_layout = self._group(parent, "groupBox_4", "adb")
-        adb_grid = QtWidgets.QGridLayout()
-        adb_grid.setSpacing(5)
-
-        adb_buttons = [
-            ("adb_remount", "remount", "重新挂载分区为可写"),
-            ("adb_wm_size", "wm size", "查看屏幕分辨率"),
-            ("adb_cmdline", "cmdline", "查看内核启动参数"),
-            ("adb_dumpsys", "dumpsys", "显示子系统信息"),
-            ("adb_deviceinfo", "device info", "综合设备信息"),
-        ]
-        for index, (name, text, tip) in enumerate(adb_buttons):
-            btn = self._button(self.groupBox_4, name, text, height=28)
-            # 固定宽度：列严格对齐；96px 是能放下 'device info' 的最小值
-            btn.setFixedWidth(96)
-            btn.setToolTip(tip)
-            setattr(self, name, btn)
-            adb_grid.addWidget(btn, index // 3, index % 3)
-
-        for col in range(3):
-            adb_grid.setColumnStretch(col, 1)
-        # 上下各留一段弹性空间：这一行的高度由旁边的 Debug 决定，按钮少了两行
-        # 之后底部会空出来，居中放比顶对齐更像"刻意留白"而不是漏排
-        adb_layout.addStretch(1)
-        adb_layout.addLayout(adb_grid)
-        adb_layout.addStretch(1)
+        return None
 
     def _build_download_group(self, parent):
         self.groupBox_dl, dl_layout = self._group(parent, "groupBox_dl", "Download Mode")
@@ -186,9 +166,10 @@ class Ui_ShellTools(object):
         dl_row.setSpacing(5)
         self.dl_autodloader = self._button(
             self.groupBox_dl, "dl_autodloader", "UNISOC autodloader", height=26)
-        dl_row.addWidget(self.dl_autodloader)
+        # 两个按钮平分整行：只按 sizeHint 排会在右边空一截
+        dl_row.addWidget(self.dl_autodloader, 1)
         self.dl_edl = self._button(self.groupBox_dl, "dl_edl", "QCOM EDL", height=26)
-        dl_row.addWidget(self.dl_edl)
+        dl_row.addWidget(self.dl_edl, 1)
         dl_layout.addLayout(dl_row)
 
     def _build_gpio_group(self, parent):
@@ -498,12 +479,7 @@ class Ui_ShellTools(object):
         self.label_7.setText(t("Project:"))
         self.label_8.setText(t("Sub-Name:"))
         self.pushButton_5.setText(t("导出ylog"))
-        self.groupBox_4.setTitle(t("adb"))
-        self.adb_remount.setText(t("remount"))
-        self.adb_wm_size.setText(t("wm size"))
-        self.adb_cmdline.setText(t("cmdline"))
-        self.adb_dumpsys.setText(t("dumpsys"))
-        self.adb_deviceinfo.setText(t("device info"))
+        self.groupBox_3.setTitle(t("ylog"))
         self.groupBox_dl.setTitle(t("Download Mode"))
         self.dl_autodloader.setText(t("UNISOC autodloader"))
         self.dl_edl.setText(t("QCOM EDL"))

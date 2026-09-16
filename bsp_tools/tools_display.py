@@ -49,6 +49,18 @@ ACTUAL_BRIGHTNESS_READ = _cat_first("actual_brightness")
 
 REFRESH_RATES = ["60", "90", "120", "144"]
 RESOLUTIONS = ["1080x2400", "1220x2712", "1260x2800", "1440x3200"]
+DENSITIES = ["240", "280", "320", "360", "400", "420", "440", "480"]
+
+# 显示子系统查询：原来是 Shell Tools 的 adb 卡（wm size / dumpsys / device info），
+# 按「侧边栏有 = 页面上不重复」的原则收拢到显示调试里
+PANEL_QUERIES = [
+    ("显示信息", "dumpsys display"),
+    ("SurfaceFlinger", "dumpsys SurfaceFlinger | head -60"),
+    ("分辨率/密度", "wm size; wm density"),
+    ("显示相关属性", "getprop | grep -i -E 'display|lcm|panel|dsi'"),
+    ("背光节点", "ls /sys/class/backlight/"),
+    ("DSI 节点", "ls /sys/class/display/"),
+]
 
 
 class DisplayDebugSection(QWidget):
@@ -72,7 +84,14 @@ class DisplayDebugSection(QWidget):
         top.addWidget(self._build_mode_card(), 1)
         layout.addLayout(top)
 
-        layout.addWidget(self._build_dcs_card())
+        # DCS 构造 与 Panel 信息 并排：两张都是"窄工具卡"，叠着放会把模块顶到
+        # 813px（视口只有 741），并排后总高降到 ~690。按最小宽度 4:3 分列
+        mid = QHBoxLayout()
+        mid.setSpacing(10)
+        mid.addWidget(self._build_dcs_card(), 4)
+        mid.addWidget(self._build_panel_info_card(), 3)
+        layout.addLayout(mid)
+
         layout.addWidget(self._build_timing_card())
         layout.addStretch()
 
@@ -119,8 +138,9 @@ class DisplayDebugSection(QWidget):
         get_btn.clicked.connect(self.get_brightness)
         row2.addWidget(get_btn)
 
-        self.bright_max_check = QCheckBox("同时读 max / actual", card)
-        self.bright_max_check.setToolTip("额外读 max_brightness 与 actual_brightness")
+        self.bright_max_check = QCheckBox("读 max/actual", card)
+        self.bright_max_check.setToolTip(
+            "勾选后额外读 max_brightness 与 actual_brightness（不勾只读 brightness）")
         row2.addWidget(self.bright_max_check)
         row2.addStretch()
 
@@ -130,7 +150,20 @@ class DisplayDebugSection(QWidget):
         return card
 
     def _build_mode_card(self):
-        card = W.Card("分辨率 / 刷新率")
+        """分辨率 / 密度 / 刷新率。
+
+        这三个是同一类东西（显示模式参数），原来散在 Shell Tools 的 adb 卡里
+        （wm size）和系统调试里，现在收拢到这里：
+        - 分辨率：wm size 读/应用/复位
+        - 密度：  wm density 读/应用/复位
+        - 刷新率：settings 读写
+
+        版式上每行只放「读取 / 应用」两个按钮，复位收成底下一颗——三行各挂三颗
+        按钮时，行最小宽度 340px，比下拉框内容宽度（112px）还吃紧，窗口一窄
+        下拉框就被压到 72px 显示成「2400×10…」（check_layout 会报"宽度不足"）。
+        两按钮后整张卡 324px，下拉框任何窗口尺寸下都能完整显示。
+        """
+        card = W.Card("分辨率 / 密度 / 刷新率")
 
         row = card.add_row()
         row.addWidget(W.field_label("分辨率", card))
@@ -138,34 +171,85 @@ class DisplayDebugSection(QWidget):
         self.res_combo.setEditable(True)
         self.res_combo.addItems(RESOLUTIONS)
         self.res_combo.setCurrentText("")
+        self.res_combo.setToolTip("填 宽x高，例如 1080x2400")
         row.addWidget(self.res_combo, 1)
+
+        read_res = W.soft_button("读取", "refresh", card)
+        read_res.setToolTip("wm size")
+        read_res.clicked.connect(self.read_resolution)
+        row.addWidget(read_res)
 
         apply_res = W.soft_button("应用", None, card)
         apply_res.clicked.connect(self.apply_resolution)
         row.addWidget(apply_res)
 
-        reset_res = W.soft_button("复位", None, card)
-        reset_res.clicked.connect(
-            lambda: self.runner.run('adb shell wm size reset', '分辨率已复位'))
-        row.addWidget(reset_res)
-
         row2 = card.add_row()
-        row2.addWidget(W.field_label("刷新率", card))
+        row2.addWidget(W.field_label("密度", card))
+        self.density_combo = QComboBox(card)
+        self.density_combo.setEditable(True)
+        self.density_combo.addItems(DENSITIES)
+        self.density_combo.setCurrentText("")
+        self.density_combo.setToolTip("dpi 数值，例如 320")
+        row2.addWidget(self.density_combo, 1)
+
+        read_density = W.soft_button("读取", "refresh", card)
+        read_density.setToolTip("wm density")
+        read_density.clicked.connect(self.read_density)
+        row2.addWidget(read_density)
+
+        apply_density = W.soft_button("应用", None, card)
+        apply_density.clicked.connect(self.apply_density)
+        row2.addWidget(apply_density)
+
+        row3 = card.add_row()
+        row3.addWidget(W.field_label("刷新率", card))
         self.fps_combo = QComboBox(card)
         self.fps_combo.setEditable(True)
         self.fps_combo.addItems(REFRESH_RATES)
         self.fps_combo.setCurrentText("")
-        row2.addWidget(self.fps_combo, 1)
+        self.fps_combo.setToolTip("设备支持的刷新率，例如 60 / 90 / 120")
+        row3.addWidget(self.fps_combo, 1)
+
+        read_fps = W.soft_button("读取", "refresh", card)
+        read_fps.setToolTip("读设备的刷新率；需要设备支持 fps 节点，"
+                            "部分平台返回为空属正常")
+        read_fps.clicked.connect(self.read_refresh_rate)
+        row3.addWidget(read_fps)
 
         apply_fps = W.soft_button("应用", None, card)
         apply_fps.clicked.connect(self.apply_refresh_rate)
-        row2.addWidget(apply_fps)
+        row3.addWidget(apply_fps)
 
-        read_fps = W.soft_button("读取", "refresh", card)
-        read_fps.clicked.connect(self.read_refresh_rate)
-        row2.addWidget(read_fps)
+        row4 = card.add_row()
+        reset_btn = W.soft_button("复位", None, card)
+        reset_btn.setToolTip("wm size reset + wm density reset：分辨率与密度恢复设备默认"
+                             "（刷新率没有对应的 reset 节点，不受影响）")
+        reset_btn.clicked.connect(self.reset_mode)
+        row4.addWidget(reset_btn)
+        row4.addStretch()
+        return card
 
-        card.add(W.heading("读取刷新率需要设备支持 fps 节点，部分平台返回为空属正常。", card))
+    def reset_mode(self):
+        """分辨率 + 密度一起复位（wm size reset / wm density reset）。"""
+        self.runner.run("wm size reset", "分辨率已复位")
+        self.runner.run("wm density reset", "密度已复位")
+
+    def _build_panel_info_card(self):
+        """Panel / 显示子系统查询：这些命令以前散在 Shell Tools 的 adb 卡里。"""
+        card = W.Card("Panel / 显示信息")
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(8)
+        grid.setVerticalSpacing(6)
+        # 两列排 3 行：这张卡只占半宽，三列会把按钮压得放不下字
+        for index, (label, command) in enumerate(PANEL_QUERIES):
+            btn = W.soft_button(label, None, card)
+            btn.setToolTip(command)
+            btn.clicked.connect(
+                lambda _c=False, cmd=command, l=label: self.runner.run(cmd, l))
+            grid.addWidget(btn, index // 2, index % 2)
+        for col in range(2):
+            grid.setColumnStretch(col, 1)
+        card.add_layout(grid)
         return card
 
     def _build_dcs_card(self):
@@ -181,15 +265,15 @@ class DisplayDebugSection(QWidget):
         row.addWidget(W.field_label("命令", card))
         self.dcs_cmd = QLineEdit(card)
         self.dcs_cmd.setPlaceholderText("如 0x1a")
-        self.dcs_cmd.setFixedWidth(96)
+        self.dcs_cmd.setFixedWidth(84)
         self.dcs_cmd.returnPressed.connect(self.build_dcs)
         row.addWidget(self.dcs_cmd)
 
         row.addWidget(W.field_label("参数", card))
         self.dcs_params = QLineEdit(card)
-        self.dcs_params.setPlaceholderText(
-            "空格分隔，如 0x2b 0x3c；留空 = 无参数短包")
-        self.dcs_params.setMinimumWidth(160)
+        self.dcs_params.setPlaceholderText("空格分隔，如 0x2b 0x3c")
+        # 这张卡只占半宽，最小宽度给 110 就够；给 160 会把模块顶出视口
+        self.dcs_params.setMinimumWidth(110)
         self.dcs_params.returnPressed.connect(self.build_dcs)
         row.addWidget(self.dcs_params, 1)
 
@@ -197,14 +281,13 @@ class DisplayDebugSection(QWidget):
         build_btn.setToolTip("按参数个数自动选短包(0x05)/带参短包(0x15)/长包(0x39)")
         build_btn.clicked.connect(self.build_dcs)
         row.addWidget(build_btn)
-        row.addStretch()
 
         result_row = card.add_row()
         result_row.addWidget(W.field_label("字节序列", card))
         self.dcs_data = QLineEdit(card)
         self.dcs_data.setReadOnly(True)
-        self.dcs_data.setPlaceholderText("点「生成」后显示，可直接复制")
-        self.dcs_data.setMinimumWidth(160)
+        self.dcs_data.setPlaceholderText("生成后显示，可直接复制")
+        self.dcs_data.setMinimumWidth(110)
         result_row.addWidget(self.dcs_data, 1)
         copy_btn = W.soft_button("复制", None, card)
         copy_btn.setToolTip("复制字节序列到剪贴板")
@@ -230,7 +313,7 @@ class DisplayDebugSection(QWidget):
         """
         card = W.Card("时序 / 带宽计算")
 
-        def spin(value, low, high, width=54, suffix=""):
+        def spin(value, low, high, width=48, suffix=""):
             box = QSpinBox(card)
             box.setRange(low, high)
             box.setValue(value)
@@ -260,6 +343,9 @@ class DisplayDebugSection(QWidget):
         # 不再给这段加分组标题：字段名（分辨率/水平/垂直）本身已经说明结构，
         # 加一行标题 + 分隔线要多占 30px，模块就会顶出纵向滚动条
         row1 = card.add_row()
+        # 同 porch 行：字段多、默认 8px 行距白占宽度，4px + 组间 addSpacing(10)
+        # 的层次反而更清楚，也把这张卡的最小宽度压回模块视口之内
+        row1.setSpacing(4)
         row1.addWidget(W.field_label("分辨率", card))
         row1.addWidget(self.t_w)
         row1.addWidget(QLabel("×", card))
@@ -286,16 +372,20 @@ class DisplayDebugSection(QWidget):
         row1.addWidget(self.t_lanes)
         row1.addStretch()
 
-        # 水平/垂直各占一行：六个框挤一行看不清哪个是哪个方向
+        # 六个 porch 一行：HFP/HBP/HSW 是水平、VFP/VBP/VSW 是垂直，前缀已经说明
+        # 方向，不再额外加「水平 / 垂直」两个分组词——那两个词占 56px，而这张卡
+        # 的最小宽度正好卡在模块视口边上（多了就出横向滚动条）
         row_h = card.add_row()
-        row_h.addWidget(W.field_label("水平", card))
+        # 这一行有 12 个控件，默认 8px 行距会白吃掉 ~90px，把最小宽度顶到视口
+        # 之外（窗口拉到 1300 就出横向滚动条）。4px 已经足够分辨「标签+输入框」
+        # 这一组，组内 4px、组间 12px 的层次也还看得出来。
+        row_h.setSpacing(4)
         for label, box in (("HFP", self.t_hfp), ("HBP", self.t_hbp),
                            ("HSW", self.t_hsw)):
             row_h.addWidget(W.field_label(label, card))
             row_h.addWidget(box)
             row_h.addSpacing(4)
         row_h.addSpacing(12)
-        row_h.addWidget(W.field_label("垂直", card))
         for label, box in (("VFP", self.t_vfp), ("VBP", self.t_vbp),
                            ("VSW", self.t_vsw)):
             row_h.addWidget(W.field_label(label, card))
@@ -313,11 +403,13 @@ class DisplayDebugSection(QWidget):
         dpi_head.addWidget(self.dpi_note_label)
         dpi_head.addStretch()
 
-        paste_btn = W.soft_button("从剪贴板解析", "download", card)
-        paste_btn.setToolTip("把屏体 spec / dmesg 片段粘进剪贴板，自动填好上面的参数")
+        # 按钮名从「从剪贴板解析 / 从设备读取」缩短：这两个名字加起来占了
+        # 235px，是这张卡最小宽度的主要来源，而模块宽度刚好卡在视口边上
+        paste_btn = W.soft_button("剪贴板解析", "download", card)
+        paste_btn.setToolTip("把屏体 spec / dmesg / DTS 片段粘进剪贴板，自动填好上面的参数")
         paste_btn.clicked.connect(self.parse_timing_clipboard)
         dpi_head.addWidget(paste_btn)
-        grab_btn = W.soft_button("从设备读取", "refresh", card)
+        grab_btn = W.soft_button("设备读取", "refresh", card)
         grab_btn.setToolTip("执行 dumpsys display 并尝试解析分辨率与刷新率")
         grab_btn.clicked.connect(self.grab_timing_from_device)
         dpi_head.addWidget(grab_btn)
@@ -628,10 +720,26 @@ class DisplayDebugSection(QWidget):
             self.runner.run(MAX_BRIGHTNESS_READ, "读取 max_brightness")
             self.runner.run(ACTUAL_BRIGHTNESS_READ, "读取 actual_brightness")
 
+    def read_resolution(self):
+        """读当前分辨率（wm size 的 Physical/Override 两行都读出来）。"""
+        self.runner.run("wm size", "读取分辨率")
+
     def apply_resolution(self):
         value = self.res_combo.currentText().strip()
         if value:
             self.runner.run(f'wm size {value}', f"分辨率设置为 {value}")
+
+    def read_density(self):
+        self.runner.run("wm density", "读取屏幕密度")
+
+    def apply_density(self):
+        value = self.density_combo.currentText().strip()
+        if not value:
+            return
+        if not value.isdigit():
+            self._toast("密度要是数字（dpi），例如 320", "warning", 2800)
+            return
+        self.runner.run(f'wm density {value}', f"密度设置为 {value}")
 
     def apply_refresh_rate(self):
         value = self.fps_combo.currentText().strip()

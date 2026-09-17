@@ -4,8 +4,6 @@
 """
 
 import os
-import sys
-import json
 import posixpath
 
 from PyQt5.QtCore import Qt, QProcess, QSize
@@ -14,6 +12,7 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QListWidget,
                              QFileDialog, QMessageBox, QMenu, QInputDialog,
                              QApplication)
 
+import app_data
 import theme
 import toolchain
 import ui_widgets as W
@@ -31,11 +30,8 @@ BOOKMARK_DEFAULTS = [
 
 
 def bookmarks_path():
-    if getattr(sys, 'frozen', False):
-        base = os.path.dirname(os.path.abspath(sys.executable))
-    else:
-        base = os.path.dirname(os.path.abspath(__file__))
-    return os.path.join(base, 'path_bookmarks.json')
+    """兼容旧名字：书签现在存在本机唯一的数据文件 DisplayTools.json 里。"""
+    return app_data.data_path()
 
 
 class FileManagerSection(QWidget):
@@ -135,23 +131,20 @@ class FileManagerSection(QWidget):
     # ================= 书签 =================
 
     def load_bookmarks(self):
-        path = bookmarks_path()
-        data = None
-        if os.path.exists(path):
-            try:
-                with open(path, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-            except Exception:
-                data = None
-        self.bookmarks = list(data) if isinstance(data, list) and data else list(BOOKMARK_DEFAULTS)
+        """从本机数据文件读书签；文件里没有这一段就用内置默认路径。"""
+        section = app_data.data().get_section(app_data.SECTION_BOOKMARKS, None)
+        if section is None:
+            self.bookmarks = list(BOOKMARK_DEFAULTS)
+        elif isinstance(section, list):
+            # 空数组就是空（用户全删了，别把默认塞回来）
+            self.bookmarks = [str(p) for p in section]
+        else:
+            self.bookmarks = list(BOOKMARK_DEFAULTS)
         self._refresh_bookmark_combo()
 
     def save_bookmarks(self):
-        try:
-            with open(bookmarks_path(), 'w', encoding='utf-8') as f:
-                json.dump(self.bookmarks, f, ensure_ascii=False, indent=2)
-        except Exception:
-            pass
+        """写回数据文件；失败返回 False，由调用方提示。"""
+        return app_data.data().set_section(app_data.SECTION_BOOKMARKS, self.bookmarks)
 
     def _refresh_bookmark_combo(self):
         self.bookmark_combo.blockSignals(True)

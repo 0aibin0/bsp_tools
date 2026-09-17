@@ -11,7 +11,7 @@
 "没查到"，不让网络问题干扰调试。
 
 私有仓库：未带 token 的 API 调用返回 404（GitHub 对私有仓库不区分"不存在"和
-"没权限"）。在 config.ini 里加一行 `update_token = ghp_xxx` 即可；默认仓库
+"没权限"）。在本机数据文件的 config 段里加一条 "update_token": "ghp_xxx" 即可；默认仓库
 是私有的，所以下载附件也走带 token 的 API 地址（见 download_asset）。
 """
 
@@ -413,7 +413,7 @@ class UpdateChecker(QThread):
 
     def _emit_auth_error(self):
         self.finished_with.emit(
-            "error", "查不到版本信息：仓库非公开时需要在 config.ini 里设置 "
+            "error", "查不到版本信息：仓库非公开时需要在 DisplayTools.json 的 config 段里设置 "
                      "update_token；也可以直接打开 {}".format(releases_url()))
 
 

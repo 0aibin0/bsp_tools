@@ -433,7 +433,7 @@ class ShellToolsPage(BaseToolPage, Ui_ShellTools):
 
     # === 配置持久化 ===
     #
-    # 统一走 app_config（同一个 config.ini）。原来这里自己 new 一个
+    # 统一走 app_config（同一个 DisplayTools.json）。原来这里自己 new 一个
     # ConfigParser 读写，和主窗口存窗口尺寸时是两个写入者，后写的会把
     # 对方刚存的键覆盖掉。
 

@@ -5,21 +5,21 @@
 - 常用工具 · 命令收藏页读的是 favorites.json（能增删改）
 
 同一个命令在两处名字不一样、面板里收藏的命令搜不到，改完还要去另一处再加一遍。
-现在两处都走这个 store：命令存在 exe 同目录的 favorites.json 里，页面上改完，
-命令面板立刻能搜到；面板里新建的命令也直接落盘。
+现在两处都走这个 store：命令存在本机唯一的数据文件 `DisplayTools.json` 里
+（和设置、路径书签同一个文件，见 app_data.py），页面上改完，命令面板立刻能搜到；
+面板里新建的命令也直接落盘。
+
+增删改一律**立即写文件**：删一条就少一条，加一条就多一条，重启后不会变回去。
 
 约定：
-- 文件不存在或读坏了 → 用内置默认清单（不覆盖用户文件，只在首次写入时生成）；
-- 写失败不抛异常（exe 放在只读目录时不该崩），只在返回值里体现；
-- 进程内单例，页面和面板拿到的永远是同一份，改完各自 refresh。
+- 文件里没有 commands 段 → 用内置默认清单（首次运行）；
+- 文件里是空数组 → 就是空（用户全删了，不能把默认塞回来）；
+- 写失败不抛异常，save() 返回 False，由页面提示用户。
 """
 
-import json
-import os
+import app_data
 
-from app_config import data_dir
-
-FAVORITES_NAME = "favorites.json"
+FAVORITES_NAME = app_data.DATA_NAME
 
 # 内置默认清单：常用工具 · 命令收藏页打开就是这些。
 # 重新挂载按侧边栏的叫法统一成 remount。
@@ -50,8 +50,8 @@ DEFAULT_COMMANDS = [
 
 
 def favorites_path():
-    """收藏文件路径：和 config.ini 一样放在 exe / 源码同目录，方便打包携带。"""
-    return os.path.join(data_dir(), FAVORITES_NAME)
+    """兼容旧名字：现在指向本机唯一的数据文件（DisplayTools.json）。"""
+    return app_data.data_path()
 
 
 def normalize(items):
@@ -70,41 +70,51 @@ def normalize(items):
 
 
 class CommandStore:
-    """favorites.json 的读写与增删改。"""
+    """命令收藏的读写与增删改。
 
-    def __init__(self, path=None):
-        self.path = path or favorites_path()
-        self.items = []
+    数据存在本机唯一的数据文件 `DisplayTools.json` 的 `commands` 段里
+    （和设置、路径书签同一个文件，见 app_data.py）。增删改都会立刻落盘——
+    页面上删一条，文件里就少一条；加一条，文件里就多一条。
+    """
+
+    def __init__(self, path=None, data=None):
+        """path: 兼容旧调用（指到某个 json）；data: 直接注入数据层（测试用）。"""
+        # 顺手容错：把数据层当第一个参数传进来也认（AppData 有 get_section）
+        if data is None and hasattr(path, "get_section"):
+            data, path = path, None
+        self._own_data = None
+        if data is not None:
+            self._data = data
+        elif path is not None:
+            self._own_data = app_data.AppData(path, migrate=False)
+            self._data = self._own_data
+        else:
+            self._data = app_data.data()
+        self.path = getattr(self._data, "path", path or favorites_path())
         self.load()
 
     # ---------- 读写 ----------
 
     def load(self):
-        data = None
-        try:
-            if os.path.isfile(self.path):
-                with open(self.path, "r", encoding="utf-8") as handle:
-                    data = json.load(handle)
-        except Exception:                                  # noqa: BLE001
-            data = None
-        if not isinstance(data, list) or not data:
+        """从数据文件读 commands 段。
+
+        只有「文件里没有这一段」（首次运行 / 段被破坏）才用内置默认清单；
+        用户把命令全删光时文件里是空数组，那就是空——不能再把默认清单塞回来，
+        不然删掉的命令下次启动又冒出来了。
+        """
+        section = self._data.get_section(app_data.SECTION_COMMANDS, None)
+        if section is None:
+            data = [dict(d) for d in DEFAULT_COMMANDS]
+        elif isinstance(section, list):
+            data = section
+        else:
             data = [dict(d) for d in DEFAULT_COMMANDS]
         self.items = normalize(data)
         return self.items
 
     def save(self):
-        """写盘；失败返回 False，调用方自己决定要不要提示。"""
-        try:
-            directory = os.path.dirname(self.path)
-            if directory:
-                os.makedirs(directory, exist_ok=True)
-            tmp = self.path + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as handle:
-                json.dump(self.items, handle, ensure_ascii=False, indent=2)
-            os.replace(tmp, self.path)
-            return True
-        except Exception:                                  # noqa: BLE001
-            return False
+        """把 commands 段写进数据文件；失败返回 False，调用方自己决定要不要提示。"""
+        return self._data.set_section(app_data.SECTION_COMMANDS, self.items)
 
     # ---------- 查询 ----------
 
@@ -136,10 +146,10 @@ class CommandStore:
                 return index
         return None
 
-    # ---------- 增删改 ----------
+    # ---------- 增删改（都会立刻落盘） ----------
 
     def add(self, name, command, group="常用"):
-        """新增一条；命令已存在时返回 (False, 已有下标)。"""
+        """新增一条并写文件；命令已存在时返回 (False, 已有下标)。"""
         existing = self.find_by_command(command)
         if existing is not None:
             return False, existing
@@ -147,7 +157,10 @@ class CommandStore:
             "group": (group or "常用").strip() or "常用",
             "name": (name or "").strip() or command.strip(),
             "command": command.strip()})
-        self.save()
+        saved = self.save()
+        if saved is False:
+            # 写失败：内存里加了但没落盘，把下标交回 None，页面会提示用户
+            return True, None
         return True, len(self.items) - 1
 
     def update(self, index, name, command, group="常用"):
@@ -157,19 +170,18 @@ class CommandStore:
             "group": (group or "常用").strip() or "常用",
             "name": (name or "").strip() or command.strip(),
             "command": command.strip()}
-        self.save()
-        return True
+        return self.save()
 
     def remove(self, index):
+        """删除一条并写文件；返回是否成功（False = 下标越界或写盘失败）。"""
         if not (0 <= index < len(self.items)):
             return False
         self.items.pop(index)
-        self.save()
-        return True
+        return self.save()
 
     def reset(self):
         self.items = [dict(d) for d in DEFAULT_COMMANDS]
-        self.save()
+        return self.save()
 
 
 _instance = None
@@ -183,8 +195,8 @@ def store():
     return _instance
 
 
-def reload_store(path=None):
-    """测试用：丢掉缓存重新读盘。"""
+def reload_store(path=None, data=None):
+    """测试用：丢掉缓存重新读盘（可指定别的文件或直接注入数据层）。"""
     global _instance
-    _instance = CommandStore(path)
+    _instance = CommandStore(path, data=data)
     return _instance

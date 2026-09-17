@@ -26,14 +26,19 @@ bsp_tools/dist/DisplayTools/
 # 「检查更新」就是从 bsp_tools/dist 里取这个文件（见 update_check.repo_asset）。
 
 # ===== 运行时生成的文件（与 exe 同目录，含本机路径与使用记录）=====
+# 设置 / 命令收藏 / 路径书签现在都在这一个文件里（见 bsp_tools/app_data.py）
+DisplayTools.json
+DisplayTools.json.tmp
+# 老的三件套：首次运行会自动迁移进 DisplayTools.json，然后改名成 *.migrated
 config.ini
 favorites.json
 path_bookmarks.json
+*.migrated
+config.ini.tmp
 adb_commands.log
 sitepack/
 crash.log
 crash.log.old
-config.ini.tmp
 
 # ===== 开发自查产物 =====
 # 截图目录按前缀忽略（shots / shots_data / shots_min / shots_shell …）

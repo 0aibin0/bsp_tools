@@ -6,6 +6,7 @@
 
 import os
 import sys
+import json
 import posixpath
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -199,6 +200,19 @@ def main():
     fav.save_entry()
     check("新增一条收藏", len(fav.items) == before + 1, str(len(fav.items)))
     check("收藏写入本地文件", os.path.exists(fpath), fpath)
+    check("本地文件就是唯一数据文件 DisplayTools.json",
+          os.path.basename(fpath) == "DisplayTools.json", fpath)
+    # 新增的这条必须真的在文件里（不是只在内存里）
+    import app_data
+    _raw = json.load(open(fpath, encoding="utf-8"))
+    check("新增的命令真的落进文件的 commands 段",
+          any(item.get("command") == "adb shell echo self-test"
+              for item in _raw.get(app_data.SECTION_COMMANDS, [])),
+          str(_raw.get(app_data.SECTION_COMMANDS, [])[-2:]))
+    check("设置也在同一个文件里（config 段）",
+          isinstance(_raw.get(app_data.SECTION_CONFIG), dict)
+          and bool(_raw.get(app_data.SECTION_CONFIG)),
+          str(list(_raw.get(app_data.SECTION_CONFIG, {}))[:4]))
     fav.search_edit.setText("自测命令")
     fav.render_list()
     check("搜索结果 1 条", fav.list_widget.count() == 1, str(fav.list_widget.count()))
@@ -239,6 +253,44 @@ def main():
           str(len(fav.items)))
     again, _ = dlg.save_current()
     check("同一条命令不会重复收藏", again is False, str(again))
+
+    # ---- 删除：走界面上的「删除」按钮流程，本地文件里也必须没有 ----
+    from PyQt5.QtWidgets import QMessageBox
+    original_question = QMessageBox.question
+    QMessageBox.question = staticmethod(lambda *args, **kwargs: QMessageBox.Yes)
+    try:
+        fav.search_edit.setText("from-palette")
+        fav.render_list()
+        index = fav.store.find_by_command("adb shell echo from-palette")
+        fav.list_widget.setCurrentRow(fav._rendered.index(index))
+        fav.delete_selected()
+    finally:
+        QMessageBox.question = original_question
+    fav.search_edit.clear()          # 别把过滤条件留给后面的用例
+    fav.render_list()
+    check("界面删除后 store 里没有了",
+          fav.store.find_by_command("adb shell echo from-palette") is None,
+          str(len(fav.items)))
+    _raw = json.load(open(fpath, encoding="utf-8"))
+    check("删除后文件的 commands 段里没有这条命令",
+          not any(item.get("command") == "adb shell echo from-palette"
+                  for item in _raw.get(app_data.SECTION_COMMANDS, [])),
+          str([i.get("command") for i in _raw.get(app_data.SECTION_COMMANDS, [])][-3:]))
+    # 重新开一个 store（等价于重启程序）确认删除是真的生效了
+    fresh = command_store.CommandStore(data=app_data.AppData(fpath, migrate=False))
+    check("重启后再读也看不到被删的命令",
+          fresh.find_by_command("adb shell echo from-palette") is None,
+          str(len(fresh.items)))
+
+    # ---- 全删光不能把内置默认塞回来 ----
+    keep = list(fresh.items)
+    fresh.items = []
+    fresh.save()
+    reread_empty = command_store.CommandStore(data=app_data.AppData(fpath, migrate=False))
+    check("命令全删光后重启仍是空的（不会恢复默认）",
+          reread_empty.items == [], str(len(reread_empty.items)))
+    fresh.items = keep
+    fresh.save()
 
     # ---- 清理：删掉自测条目并恢复原文件 ----
     for command in ("adb shell echo self-test", "adb shell echo from-palette"):
@@ -892,6 +944,74 @@ def main():
         check("说明里交代了保存路径与覆盖风险",
               "保存到" in text and "覆盖" in text, text[:160])
     window._update_checker = None
+
+    print("\n[16] 单一数据文件：老文件迁移 + 段语义")
+    import tempfile
+    import shutil
+    from app_data import AppData, SECTION_CONFIG, SECTION_COMMANDS, SECTION_BOOKMARKS
+
+    # 老三个文件 → 一个 json
+    mdir = tempfile.mkdtemp(prefix="dt-migrate-")
+    try:
+        with open(os.path.join(mdir, "config.ini"), "w", encoding="utf-8") as handle:
+            handle.write("[DEFAULT]\nwindow_width = 1366\nlast_page = tools\n")
+        with open(os.path.join(mdir, "favorites.json"), "w", encoding="utf-8") as handle:
+            json.dump([{"group": "常用", "name": "列出设备", "command": "adb devices"}],
+                      handle, ensure_ascii=False)
+        with open(os.path.join(mdir, "path_bookmarks.json"), "w", encoding="utf-8") as handle:
+            json.dump(["/sdcard/", "/data/ylog/"], handle)
+        mpath = os.path.join(mdir, "DisplayTools.json")
+        migrated = AppData(mpath)
+        check("迁移后生成唯一数据文件", os.path.isfile(mpath), mpath)
+        check("设置迁进来了",
+              migrated.get_section(SECTION_CONFIG, {}).get("window_width") == "1366",
+              str(migrated.get_section(SECTION_CONFIG)))
+        check("命令收藏迁进来了",
+              len(migrated.get_section(SECTION_COMMANDS, [])) == 1,
+              str(migrated.get_section(SECTION_COMMANDS)))
+        check("路径书签迁进来了",
+              migrated.get_section(SECTION_BOOKMARKS, []) == ["/sdcard/", "/data/ylog/"],
+              str(migrated.get_section(SECTION_BOOKMARKS)))
+        check("老文件改名成 .migrated（不删数据）",
+              os.path.isfile(os.path.join(mdir, "config.ini.migrated"))
+              and os.path.isfile(os.path.join(mdir, "favorites.json.migrated"))
+              and os.path.isfile(os.path.join(mdir, "path_bookmarks.json.migrated")),
+              str(sorted(os.listdir(mdir))))
+        live = [f for f in os.listdir(mdir)
+                if not f.endswith(".migrated") and not f.endswith(".tmp")]
+        check("目录里只剩一个活的数据文件", live == ["DisplayTools.json"], str(live))
+        again = AppData(mpath)
+        check("再读一次不丢数据（迁移幂等）",
+              len(again.get_section(SECTION_COMMANDS, [])) == 1
+              and again.get_section(SECTION_CONFIG, {}).get("last_page") == "tools",
+              str(again.get_section(SECTION_CONFIG)))
+    finally:
+        shutil.rmtree(mdir, ignore_errors=True)
+
+    # 段语义：没有老文件 → 段不存在（用内置默认）；空数组 → 就是空
+    edir = tempfile.mkdtemp(prefix="dt-empty-")
+    try:
+        epath = os.path.join(edir, "DisplayTools.json")
+        empty = AppData(epath)
+        check("首次运行不写文件（别在空目录里留垃圾）", not os.path.isfile(epath))
+        check("没有 commands 段时返回 None（调用方用内置默认）",
+              empty.get_section(SECTION_COMMANDS, None) is None)
+        check("没有 path_bookmarks 段时返回 None（调用方用默认书签）",
+              empty.get_section(SECTION_BOOKMARKS, None) is None)
+        win = window.pages["tools"].sections["files"]
+        check("文件管理页拿到的是默认书签", len(win.bookmarks) >= 5, str(win.bookmarks))
+    finally:
+        shutil.rmtree(edir, ignore_errors=True)
+
+    # 设置写盘后仍在同一文件
+    import app_config
+    key = "selftest_marker"
+    app_config.config().update(**{key: "1"})
+    raw = json.load(open(app_config.config_path(), encoding="utf-8"))
+    check("设置写进同一个文件的 config 段",
+          raw.get(SECTION_CONFIG, {}).get(key) == "1", str(raw.get(SECTION_CONFIG, {}).get(key)))
+    app_config.config().set(key, "")
+    app_config.config().save()
 
     # 收尾
     window.pages["tools"].stop_background()

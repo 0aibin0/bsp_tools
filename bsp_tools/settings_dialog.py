@@ -3,6 +3,9 @@
 目前主要是「工具链路径」：exe 发给没装 platform-tools 的同事时，这个是能不能
 用的分界线——原来全项目写死裸 `adb`，靠 PATH 找，找不到就报 Windows 的
 `'adb' is not recognized`，很难自查。
+
+顺带把「本机数据文件」的位置显示出来：设置、命令收藏、路径书签现在都在
+exe / 源码同目录的一个 `DisplayTools.json` 里，从这里能直接打开文件夹。
 """
 
 import os
@@ -13,6 +16,7 @@ from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QGridLayout,
                              QDialogButtonBox, QFrame, QComboBox)
 
 import app_config
+import app_data
 import theme
 import toolchain
 import ui_widgets as W
@@ -111,11 +115,26 @@ class SettingsDialog(QDialog):
 
         layout.addWidget(W.separator(self))
 
-        path_label = QLabel("配置目录：{}".format(app_config.data_dir()), self)
-        path_label.setObjectName("pageSubtitle")
-        path_label.setWordWrap(True)
-        path_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        layout.addWidget(path_label)
+        layout.addWidget(W.heading("本机数据文件"))
+        self.data_label = QLabel("", self)
+        self.data_label.setObjectName("pageSubtitle")
+        self.data_label.setWordWrap(True)
+        self.data_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        layout.addWidget(self.data_label)
+
+        data_row = QHBoxLayout()
+        data_row.setSpacing(8)
+        open_btn = W.soft_button("打开所在文件夹", "folder", self)
+        open_btn.setToolTip("设置、命令收藏、路径书签都在这一个文件里，方便备份/迁移")
+        open_btn.clicked.connect(self._open_data_dir)
+        data_row.addWidget(open_btn)
+
+        copy_btn = W.soft_button("复制路径", "copy", self)
+        copy_btn.clicked.connect(self._copy_data_path)
+        data_row.addWidget(copy_btn)
+        data_row.addStretch()
+        layout.addLayout(data_row)
+        self._refresh_data_label()
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.Ok | QDialogButtonBox.Cancel, Qt.Horizontal, self)
@@ -124,6 +143,38 @@ class SettingsDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+
+    # ---------- 本机数据文件 ----------
+
+    def _refresh_data_label(self):
+        """显示唯一数据文件的完整路径与段大小。
+
+        程序是"绿色版"：数据文件就在 exe / 源码同目录，跟着程序走。
+        从源码跑和从 exe 跑用的是两个不同目录的文件（这里写清楚，免得改了
+        一处看不到另一处）。
+        """
+        path = app_config.config_path()
+        parts = []
+        for name, label in ((app_data.SECTION_CONFIG, "设置"),
+                            (app_data.SECTION_COMMANDS, "命令收藏"),
+                            (app_data.SECTION_BOOKMARKS, "路径书签")):
+            section = app_data.data().get_section(name)
+            if isinstance(section, dict):
+                parts.append("{} {} 项".format(label, len(section)))
+            elif isinstance(section, list):
+                parts.append("{} {} 条".format(label, len(section)))
+        self.data_label.setText(
+            "{}\n（{}）".format(path, " · ".join(parts) if parts else "暂无内容"))
+
+    def _open_data_dir(self):
+        from PyQt5.QtCore import QUrl
+        from PyQt5.QtGui import QDesktopServices
+        folder = os.path.dirname(os.path.abspath(app_config.config_path()))
+        QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
+
+    def _copy_data_path(self):
+        from PyQt5.QtWidgets import QApplication
+        QApplication.clipboard().setText(app_config.config_path())
 
     # ---------- 交互 ----------
 

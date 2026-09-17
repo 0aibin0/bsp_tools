@@ -2,10 +2,13 @@
 
 把日常反复敲的 adb 命令存成可点击的快捷项，支持增删改、分组、搜索。
 
-数据源是 command_store（exe 同目录的 favorites.json）：Ctrl+K 命令面板读的
-也是这一份，两处不再各存一套。改完调 notify_changed()，命令面板下次打开
-就能搜到新命令。
+数据源是 command_store：命令存在本机唯一的数据文件 `DisplayTools.json` 里
+（和设置、路径书签同一个文件），Ctrl+K 命令面板读的也是这一份。增删改**立即
+落盘**——删一条文件里就少一条，加一条就多一条，重启不会变回去；写盘失败会
+弹提示，不会默默当成功。
 """
+
+import os
 
 from PyQt5.QtCore import Qt, QSize
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QListWidget,
@@ -128,8 +131,9 @@ class FavoritesSection(QWidget):
         row.addStretch()
 
         hint = W.heading(
-            "提示：双击左侧条目直接执行，输出落在右侧「执行结果」面板；这里的收藏"
-            "与 Ctrl+K 命令面板共用同一份 favorites.json。", card)
+            "提示：双击左侧条目直接执行，输出落在右侧「执行结果」面板；增删改会立即"
+            "写进 {}（Ctrl+K 命令面板共用同一份）。".format(
+                os.path.basename(self.store.path)), card)
         hint.setWordWrap(True)
         card.add(hint)
         card.body.addStretch()
@@ -223,15 +227,17 @@ class FavoritesSection(QWidget):
             return
         item = self.items[index]
         confirm = QMessageBox.question(
-            self, "确认删除", f"确定删除「{item['name']}」？",
+            self, "确认删除", f"确定删除「{item['name']}」？\n\n删掉后会立即从本地"
+            f"数据文件里移除（重启不会回来）。",
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if confirm != QMessageBox.Yes:
             return
-        self.store.remove(index)
+        saved = self.store.remove(index)
         self._refresh_groups()
         self.render_list()
         self.clear_editor()
         self.notify_changed()
+        self._report_saved(saved, f"已删除「{item['name']}」")
 
     def save_entry(self):
         name = self.name_edit.text().strip()
@@ -243,20 +249,36 @@ class FavoritesSection(QWidget):
 
         existing = self.store.find_by_command(command)
         if self.editing_index is not None and 0 <= self.editing_index < len(self.items):
-            self.store.update(self.editing_index, name, command, group)
+            saved = self.store.update(self.editing_index, name, command, group)
+            message = f"已更新命令「{name}」"
         elif existing is not None:
             # 同一条命令不在收藏里放两遍，直接改成新名字
-            self.store.update(existing, name, command, group)
+            saved = self.store.update(existing, name, command, group)
+            message = f"已更新命令「{name}」"
         else:
-            self.store.add(name, command, group)
+            _added, index = self.store.add(name, command, group)
+            saved = index is not None
+            message = f"已保存命令「{name}」"
 
         self._refresh_groups()
         self.render_list()
         self.clear_editor()
         self.notify_changed()
+        self._report_saved(saved, message)
+
+    def _report_saved(self, saved, message):
+        """统一提示写入结果：写失败必须说出来，不能默默当成功。"""
         window = self.window()
+        if saved is False:
+            detail = "写不进 {}".format(self.store.path)
+            if hasattr(window, 'toast'):
+                window.toast(f"保存失败：{detail}", "error", 6000)
+            else:
+                QMessageBox.warning(self, "保存失败",
+                                    f"{message}，但写文件失败：\n{detail}")
+            return
         if hasattr(window, 'toast'):
-            window.toast(f"已保存命令「{name}」", "success")
+            window.toast(message, "success")
 
     def clear_editor(self):
         self.editing_index = None
@@ -270,8 +292,9 @@ class FavoritesSection(QWidget):
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if confirm != QMessageBox.Yes:
             return
-        self.store.reset()
+        saved = self.store.reset()
         self._refresh_groups()
         self.render_list()
         self.clear_editor()
         self.notify_changed()
+        self._report_saved(saved, "已恢复内置命令")

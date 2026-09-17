@@ -66,15 +66,37 @@ Shell Tools 是「左侧控制区（2 列网格）+ **右侧竖向 Log 面板**�
 
 ## 数据文件（与程序同目录）
 
-- `config.ini` — 输入框记忆、adb push/pull 设备路径历史（沿用 v3.0.x 键名）
-- `favorites.json` — 命令收藏夹；**Ctrl+K 命令面板和「常用工具 · 命令收藏」
-  页共用这一份**（`command_store.py` 是唯一数据源）
-- `path_bookmarks.json` — 设备路径书签
-- `adb_commands.log` — 命令输出日志
+**只有一个 JSON**：`DisplayTools.json`（见 `bsp_tools/app_data.py`）。
+
+```json
+{
+  "version": 1,
+  "config":         { "window_width": "1360", "last_page": "tools", ... },
+  "commands":       [ {"group": "常用", "name": "列出设备", "command": "adb devices"} ],
+  "path_bookmarks": [ "/sdcard/", "/data/ylog/" ]
+}
+```
+
+- `config` — 输入框记忆、窗口尺寸、上次页面、adb 路径、push/pull 设备路径历史
+- `commands` — 命令收藏；**Ctrl+K 命令面板和「常用工具 · 命令收藏」页共用这一段**
+  （`command_store.py`）；界面上增删改会立即写回文件
+- `path_bookmarks` — 文件管理的设备路径书签
+
+段的语义（别踩坑）：**段不存在** = 用内置默认清单（首次运行）；**段是空数组** =
+就是空（用户把命令/书签全删了，不能再把默认塞回来）。所以 `AppData` 不会预先
+建键，`get_section(name, None)` 拿到 `None` 才回退默认。
+
+老的三件套（`config.ini` / `favorites.json` / `path_bookmarks.json`）首次运行会
+自动合并进这个文件，然后改名成 `*.migrated`（不删数据，随时能翻回去；确认没用
+了可以手动删掉）。
+
+程序是绿色版：数据文件跟着 exe / 源码目录走，**从源码跑和从 exe 跑用的是两个
+不同目录的文件**（「关于」和「设置」里都写了当前正用哪个文件）。`adb_commands.log`
+与 `crash.log` 仍是独立的日志文件（不是配置）。
 
 ## 版本与更新
 
-- 版本号只在 `theme.APP_VERSION` 和 git tag（`v3.2.13`）里，**exe 文件名不带版本号**。
+- 版本号只在 `theme.APP_VERSION` 和 git tag（`v3.2.14`）里，**exe 文件名不带版本号**。
 - 发版流程：改 `APP_VERSION` → 跑 `run_checks.bat` → `DisplayTools.spec` 打包 →
   `git rm` 旧 exe、提交新 exe → `git tag vX.Y.Z` → 推分支**和** tag（检查更新靠 tag）。
 - 「检查更新」查的顺序：`/releases/latest`（能拿到说明和附件）→ 没有 Release 就
@@ -82,8 +104,9 @@ Shell Tools 是「左侧控制区（2 列网格）+ **右侧竖向 Log 面板**�
   `bsp_tools/dist` 里取提交好的 exe（仓库是公开的，不需要 token）。
   下载文件名带版本号（`DisplayTools_vX.Y.Z.exe`），不覆盖正在运行的自己，旧版
   留着以便回退。
-- 仓库若是私有：在 `config.ini` 里加 `update_token = ghp_xxx`（未带 token 的
-  API 调用对私有仓库返回 404）；`update_repo` 可改仓库（默认 `0aibin0/bsp_tools`）。
+- 仓库若是私有：在 `DisplayTools.json` 的 `config` 段里加
+  `"update_token": "ghp_xxx"`（未带 token 的 API 调用对私有仓库返回 404）；
+  `"update_repo"` 可改仓库（默认 `0aibin0/bsp_tools`）。
 
 ## 开发自查
 

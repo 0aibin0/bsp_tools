@@ -1,11 +1,12 @@
 """命令面板（Ctrl+K）。
 
-面板和「常用工具 · 命令收藏」共用同一份数据（command_store → favorites.json）：
+面板和「常用工具 · 命令收藏」共用同一份数据（command_store → 本机唯一的
+数据文件 `DisplayTools.json` 的 commands 段）：
 
 - 搜索框里敲的关键字同时匹配名称和命令，收藏页里加的命令这里马上搜得到；
 - 列表选中一条回车/双击 → 在 Shell Tools 页执行；
 - 输入框里现敲/粘贴的命令也能直接执行（列表最后会多一条「直接执行：…」）；
-- 「存为收藏」把当前命令写进 favorites.json，命令收藏页立刻能看到。
+- 「存为收藏」把当前命令写进 DisplayTools.json，命令收藏页立刻能看到。
 
 对话框只负责「选命令 / 存命令」，执行和跳转由外部信号处理，
 这样 selftest 能不弹模态窗口就把逻辑跑一遍。
@@ -76,7 +77,7 @@ class CommandPaletteDialog(QDialog):
         buttons.addWidget(self.run_btn)
 
         self.save_btn = W.soft_button("存为收藏", "star", self)
-        self.save_btn.setToolTip("写进命令收藏（favorites.json），命令收藏页里马上能看到")
+        self.save_btn.setToolTip("写进命令收藏（DisplayTools.json 的 commands 段），命令收藏页里马上能看到")
         self.save_btn.clicked.connect(self.save_current)
         buttons.addWidget(self.save_btn)
 

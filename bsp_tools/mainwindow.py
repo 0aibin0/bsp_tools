@@ -54,7 +54,7 @@ PAGE_DEFS = [
 ]
 
 # 命令面板的可选命令清单已并入 command_store（与「常用工具 · 命令收藏」
-# 共用 favorites.json）：面板里能搜到、能新增、能改，见 show_command_palette()。
+# 共用 DisplayTools.json 的 commands 段）：面板里能搜、能新增、能改。
 
 
 def resource_path(*parts):
@@ -580,7 +580,7 @@ class MainWindow(QMainWindow):
     def show_command_palette(self):
         """命令面板（Ctrl+K）。
 
-        数据源和「常用工具 · 命令收藏」是同一份 favorites.json（command_store）：
+        数据源和「常用工具 · 命令收藏」是同一份数据（command_store → DisplayTools.json）：
         面板里搜得到收藏页里加的命令；面板里现敲的命令也能直接存进收藏。
         """
         dlg = command_palette.CommandPaletteDialog(command_store.store(), self)
@@ -636,7 +636,25 @@ class MainWindow(QMainWindow):
 
     def show_changelog(self):
         self._info_box("更新日志",
-                       "v3.2.13 (当前)\n"
+                       "v3.2.14 (当前)\n"
+                       "  - 本机文件从三个合成一个：原来 exe 同目录有 config.ini（设置）、\n"
+                       "    favorites.json（命令收藏）、path_bookmarks.json（路径书签），\n"
+                       "    现在只有 DisplayTools.json 一个，里面分 config / commands /\n"
+                       "    path_bookmarks 三段。首次运行会自动把老文件并进来，并把老文件\n"
+                       "    改名成 *.migrated（不删数据，确认没用可以自己删）。\n"
+                       "  - 命令收藏的增删改一律**立即写回文件**，并补上两个坑：\n"
+                       "      · 以前「把命令全删光」后重启会变回内置默认清单（空数组被\n"
+                       "        当成没数据）——现在段不存在才用默认，空数组就是空；\n"
+                       "      · 写盘失败（exe 放在只读目录等）以前是静默吞掉，现在会弹\n"
+                       "        提示，不会让你以为存上了。\n"
+                       "  - 「设置」里新增「本机数据文件」：显示完整路径 + 三个段各有多少\n"
+                       "    项，带「打开所在文件夹 / 复制路径」。程序是绿色版，数据文件\n"
+                       "    跟着 exe 走——从源码跑和从 exe 跑用的是两个目录的文件，\n"
+                       "    这里能看到当前到底在用哪个。\n"
+                       "  - 「关于」里的目录信息同样改成显示数据文件全名。\n"
+                       "  - selftest 189 项：新增老文件迁移（三合一、幂等、只剩一个活文件）、\n"
+                       "    段语义（缺段用默认 / 空数组就是空）、界面删除后文件里也没有。\n\n"
+                       "v3.2.13 (2026-09-16)\n"
                        "  - 显示调试收拢显示模式参数：dumpsys display / wm size / wm density\n"
                        "    从 Shell Tools 的 adb 卡搬进「分辨率 / 密度 / 刷新率」卡片，\n"
                        "    三行各留「读取 / 应用」，复位收成底下一颗（wm size reset +\n"
@@ -647,7 +665,7 @@ class MainWindow(QMainWindow):
                        "    控制区按卡片高度重新配对：GPIO + Download Mode（87/87）、\n"
                        "    Debug + ylog（155/160）、fastboot flash 整宽，右边只留 Log。\n"
                        "  - 侧边栏「重新挂载」改叫 remount（和命令名一致，一看就知道敲什么）。\n"
-                       "  - 命令面板（Ctrl+K）与「命令收藏」统一成一份数据（favorites.json）：\n"
+                       "  - 命令面板（Ctrl+K）与「命令收藏」统一成一份数据：\n"
                        "    面板里搜得到收藏页加的命令，面板里现敲的命令也能「存为收藏」\n"
                        "    直接落盘；多了「管理收藏」跳转，重复命令不会收两遍。\n"
                        "  - 打包产物统一叫 DisplayTools.exe（不带版本号）：版本号只在\n"
@@ -915,16 +933,20 @@ class MainWindow(QMainWindow):
             "作者：{}\n\n"
             "adb：{}\n"
             "fastboot：{}\n"
-            "配置目录：{}\n\n"
+            "数据目录：{}\n"
+            "数据文件：{}（设置 / 命令收藏 / 路径书签都在这一个文件里，{}\n"
+            "          命令收藏与 Ctrl+K 命令面板共用它）\n\n"
             "常用工具：日志分析 | 设备信息 | 显示调试 | 现场包 | 触摸调试 |\n"
             "          系统调试 | 性能监控 | 文件管理 | 命令收藏\n"
-            "Shell 工具：adb / fastboot 控制 | 自定义命令 | density | printk |\n"
+            "Shell 工具：fastboot 控制 | 自定义命令 | density | printk |\n"
             "            烧录 | 截图录屏 | ylog | APK | 投屏\n"
             "转换工具：Initcode 构建（双向） | LK↔Kernel 互转 | LK→BAT{}".format(
                 "{} - BSP-LCM 调试工具集".format(theme.APP_NAME),
                 theme.APP_VERSION, theme.APP_AUTHOR,
                 toolchain.describe("adb"), toolchain.describe("fastboot"),
-                app_config.data_dir(), extra))
+                app_config.data_dir(), os.path.basename(app_config.config_path()),
+                "程序是绿色版，数据跟着 exe 走；从源码跑和从 exe 跑是两个目录",
+                extra))
         # 关于框不需要那么高，内容短
         dialog = info_dialog.InfoDialog(
             "关于", text, self, width=760, height=460,

@@ -7,6 +7,7 @@
 import os
 import sys
 import json
+import time
 import posixpath
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -847,13 +848,21 @@ def main():
           update_check.pick_asset([{"name": "a.txt"}, {"name": "DisplayTools.zip"}])["name"]
           == "DisplayTools.zip")
     check("空附件列表返回 None", update_check.pick_asset([]) is None)
-    check("下载文件名带版本号",
-          update_check.default_download_name("v3.2.13", {"name": "DisplayTools.exe"})
-          == "DisplayTools_v3.2.13.exe",
-          update_check.default_download_name("v3.2.13", {"name": "DisplayTools.exe"}))
-    check("文件名已含版本就不重复加",
-          update_check.default_download_name("v3.2.13", {"name": "DisplayTools_v3.2.13.exe"})
-          == "DisplayTools_v3.2.13.exe")
+    check("下载文件名固定 DisplayTools.exe（不带版本号）",
+          update_check.default_download_name({"name": "DisplayTools.exe"}, "v3.2.15")
+          == "DisplayTools.exe",
+          update_check.default_download_name({"name": "DisplayTools.exe"}, "v3.2.15"))
+    check("附件名带版本号也会被规范成 DisplayTools.exe",
+          update_check.default_download_name({"name": "DisplayTools_v9.9.9.exe"}, "v9.9.9")
+          == "DisplayTools_v9.9.9.exe"
+          and update_check.default_download_name({"name": "x.zip"}, "v9.9.9")
+          == "DisplayTools.exe",
+          update_check.default_download_name({"name": "x.zip"}, "v9.9.9"))
+    check("从源码跑时不自动替换", update_check.can_self_update() is False)
+    check("源码模式下落到数据目录的 DisplayTools.exe",
+          os.path.basename(update_check.staged_path({"name": "DisplayTools.exe"}, "v9"))
+          == "DisplayTools.exe",
+          update_check.staged_path({"name": "DisplayTools.exe"}, "v9"))
     check("大小格式化", update_check.human_size(1536) == "1.5 KB",
           update_check.human_size(1536))
 
@@ -937,12 +946,41 @@ def main():
     if opened:
         labels = [label for label, _btn in opened[0]._action_buttons]
         text = opened[0].view.toPlainText()
-        check("更新框里有「下载新版本」和「打开发布页」",
+        check("更新框里有下载与打开发布页两个入口",
               "下载新版本" in labels and "打开发布页" in labels, str(labels))
         check("说明里带附件名与大小", "DisplayTools.exe" in text and "1.0 KB" in text,
               text[:120])
-        check("说明里交代了保存路径与覆盖风险",
-              "保存到" in text and "覆盖" in text, text[:160])
+        check("从源码跑时说明里讲清不会自动替换",
+              "不会自动替换" in text and "下载并重启" in text, text[-260:])
+        check("保存路径是 DisplayTools.exe（不带版本号）",
+              "DisplayTools_v" not in text, text[:400])
+
+    # 打包运行时：按钮变成「下载并重启」，说明里交代自动退出与 .old 备份
+    real_frozen = getattr(sys, "frozen", False)
+    real_exec = sys.executable
+    opened2 = []
+    info_dialog.InfoDialog.exec_ = lambda self: opened2.append(self)
+    try:
+        sys.frozen = True
+        sys.executable = os.path.join(tempfile.gettempdir(), "DisplayTools.exe")
+        window._offer_update("发现新版本 v9.9.9（当前 {}）".format(theme.APP_VERSION))
+    finally:
+        info_dialog.InfoDialog.exec_ = original_exec
+        if not real_frozen and hasattr(sys, "frozen"):
+            del sys.frozen
+        sys.executable = real_exec
+    if opened2:
+        labels2 = [label for label, _btn in opened2[0]._action_buttons]
+        text2 = opened2[0].view.toPlainText()
+        check("打包运行时按钮是「下载并重启」", "下载并重启" in labels2, str(labels2))
+        check("说明里交代自动退出、换 exe、启动新版",
+              "自动退出" in text2 and "启动新版本" in text2, text2[:400])
+        check("说明里交代旧版备份 .old 与回退办法",
+              "DisplayTools.exe.old" in text2 and "改回" in text2, text2[:400])
+        check("保存到的是 exe 同目录的 .new（换名后即 DisplayTools.exe）",
+              "DisplayTools.exe.new" in text2, text2[:400])
+    else:
+        check("打包运行时按钮是「下载并重启」", False, "对话框没打开")
     window._update_checker = None
 
     print("\n[16] 单一数据文件：老文件迁移 + 段语义")
@@ -1012,6 +1050,60 @@ def main():
           raw.get(SECTION_CONFIG, {}).get(key) == "1", str(raw.get(SECTION_CONFIG, {}).get(key)))
     app_config.config().set(key, "")
     app_config.config().save()
+
+    print("\n[17] 自动更新：换文件 + 重启（用两个假 exe 走真实流程）")
+    sandbox = tempfile.mkdtemp(prefix="dt-swap-")
+    try:
+        fake_target = os.path.join(sandbox, "DisplayTools.exe")
+        fake_staged = os.path.join(sandbox, "DisplayTools.exe.new")
+        with open(fake_target, "w", encoding="utf-8") as handle:
+            handle.write("OLD v3.2.14")
+        with open(fake_staged, "w", encoding="utf-8") as handle:
+            handle.write("NEW v3.2.15")
+
+        # 暂存路径规则（打包运行时才 同目录 + .new），下面用假 frozen 验证
+        real_frozen = getattr(sys, "frozen", False)
+        real_exec = sys.executable
+        try:
+            sys.frozen = True
+            sys.executable = fake_target
+            check("打包运行时能自动替换", update_check.can_self_update() is True)
+            check("暂存在 exe 同目录、名字是 DisplayTools.exe.new",
+                  update_check.staged_path({"name": "DisplayTools.exe"}, "v3.2.15")
+                  == os.path.join(sandbox, "DisplayTools.exe.new"),
+                  update_check.staged_path({"name": "DisplayTools.exe"}, "v3.2.15"))
+            check("备份路径是 DisplayTools.exe.old",
+                  update_check.old_backup_path() == fake_target + ".old",
+                  update_check.old_backup_path())
+            script = update_check.swap_command(fake_staged, fake_target, pid=999999)
+            check("更新脚本里同时有目标/新文件/备份三个路径",
+                  fake_target in script and fake_staged in script
+                  and (fake_target + ".old") in script)
+            # 真跑一遍：等旧进程（这个假 PID）退出 → 换名 → 启动
+            update_check.start_swap(fake_staged, fake_target, pid=999999)
+            deadline = time.time() + 30
+            while time.time() < deadline and os.path.exists(fake_staged):
+                time.sleep(0.3)
+            check("新文件已换到 DisplayTools.exe",
+                  os.path.isfile(fake_target)
+                  and open(fake_target, encoding="utf-8").read().startswith("NEW"),
+                  open(fake_target, encoding="utf-8").read() if os.path.isfile(fake_target) else "-")
+            check("旧版本留在 DisplayTools.exe.old（起不来能换回去）",
+                  os.path.isfile(fake_target + ".old")
+                  and open(fake_target + ".old", encoding="utf-8").read().startswith("OLD"),
+                  "-")
+            check("暂存 .new 文件已消费掉", not os.path.exists(fake_staged))
+            check("启动成功后能清理 .old",
+                  update_check.cleanup_old_backup() == fake_target + ".old"
+                  and not os.path.exists(fake_target + ".old"))
+        finally:
+            if not real_frozen and hasattr(sys, "frozen"):
+                del sys.frozen
+            sys.executable = real_exec
+    except Exception as exc:                                # noqa: BLE001
+        check("自动替换流程跑通", False, "{}: {}".format(type(exc).__name__, exc))
+    finally:
+        shutil.rmtree(sandbox, ignore_errors=True)
 
     # 收尾
     window.pages["tools"].stop_background()

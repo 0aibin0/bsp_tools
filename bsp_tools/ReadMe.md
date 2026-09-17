@@ -102,8 +102,15 @@ Shell Tools 是「左侧控制区（2 列网格）+ **右侧竖向 Log 面板**�
 - 「检查更新」查的顺序：`/releases/latest`（能拿到说明和附件）→ 没有 Release 就
   退回 tags API 比版本号 → 下载时优先 Release 附件，没有就从仓库
   `bsp_tools/dist` 里取提交好的 exe（仓库是公开的，不需要 token）。
-  下载文件名带版本号（`DisplayTools_vX.Y.Z.exe`），不覆盖正在运行的自己，旧版
-  留着以便回退。
+- **下载并重启（自替换）**：安装包名字固定 `DisplayTools.exe`，不带版本号。
+  点「下载并重启」后：下载到 exe 同目录的 `DisplayTools.exe.new`（运行中的 exe
+  锁着，覆盖不了）→ 后台 PowerShell 脚本用 PID 等本进程退出 → 旧 exe 改名成
+  `DisplayTools.exe.old` → 新文件就位成 `DisplayTools.exe` → 启动新版本。
+  新版启动 3 秒后自己删掉 `.old`（万一新版起不来，把 `.old` 改回
+  `DisplayTools.exe` 就能回退）。脚本用 `-EncodedCommand`（UTF-16LE base64）
+  传递，不写 `.bat`、不留文件，也避开中文路径的编码坑；spawn 用
+  `CREATE_NO_WINDOW`，**别用 `DETACHED_PROCESS`**（实测那样起的 powershell
+  会立刻 rc=0 退出、一行都不执行）。
 - 仓库若是私有：在 `DisplayTools.json` 的 `config` 段里加
   `"update_token": "ghp_xxx"`（未带 token 的 API 调用对私有仓库返回 404）；
   `"update_repo"` 可改仓库（默认 `0aibin0/bsp_tools`）。
@@ -125,7 +132,7 @@ run_checks.bat device     # 再加上真机相关的 4 项（要连板子）
 .venv\Scripts\python.exe devtools\check_layout.py      # 布局健康检查：多种窗口尺寸下检测重叠/压缩/越界
 .venv\Scripts\python.exe devtools\check_panel_width.py # 右侧两个面板的文本框必须都是 240px（固定，不随窗口变）
 .venv\Scripts\python.exe devtools\check_wraplabel.py   # 自动换行标签高度是否够（inspect_ui 的盲区）
-.venv\Scripts\python.exe devtools\selftest.py          # 逻辑自测 170 项（不需要连接设备）
+.venv\Scripts\python.exe devtools\selftest.py          # 逻辑自测 204 项（不需要连接设备）
 .venv\Scripts\python.exe devtools\check_theme.py       # 浅色/深色令牌完整性与残留检查
 .venv\Scripts\python.exe devtools\check_timing.py      # 时序/带宽公式 + 文本解析 + DCS 包构造
 .venv\Scripts\python.exe devtools\check_multidevice.py # 多设备 -s 注入（保证不会出现两个 -s）

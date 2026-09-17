@@ -1,23 +1,31 @@
-"""版本更新检查 + 从 GitHub 下载新版本。
+"""版本更新检查 + 从 GitHub 下载并自替换重启。
 
-两条路：
+三条路：
 - **检查**：优先 `GET /repos/{repo}/releases/latest`（能拿到 release 说明和附件），
   没有 release 就退回 tags API，只比版本号。
-- **下载**：release 附件里的 exe（找不到 exe 就退而求其次找 zip），下载到
-  exe / 源码同目录，文件名带上版本号——运行中的 DisplayTools.exe 是锁着的，
-  覆盖不了，也不能覆盖（万一新版本起不来就没法回退）。
+- **下载**：release 附件里的 exe（找不到 exe 就退而求其次找 zip，都没有就从
+  仓库 `bsp_tools/dist` 取提交好的 exe）。落盘先叫 `DisplayTools.exe.new`
+  （运行中的 exe 锁着，不能直接覆盖），换名后就是正式的 `DisplayTools.exe`，
+  **不带版本号**。
+- **自替换重启**：打包运行时，下载完退出旧进程 → 旧 exe 改名成
+  `DisplayTools.exe.old` → 新文件就位 → 启动新版本。新版本启动 3 秒后自己把
+  `.old` 删掉（万一新版起不来，.old 还在，改回名字就能用）。
+  换名用 PowerShell -EncodedCommand（UTF-16LE base64），避开批处理文件的编码坑。
 
-刻意不自动下载、不弹模态窗口，只在用户点「检查更新」时跑；失败一律当成
+刻意不自动检查、不弹模态窗口，只在用户点「检查更新」时跑；失败一律当成
 "没查到"，不让网络问题干扰调试。
 
 私有仓库：未带 token 的 API 调用返回 404（GitHub 对私有仓库不区分"不存在"和
-"没权限"）。在本机数据文件的 config 段里加一条 "update_token": "ghp_xxx" 即可；默认仓库
-是私有的，所以下载附件也走带 token 的 API 地址（见 download_asset）。
+"没权限"）。在本机数据文件的 config 段里加一条 "update_token": "ghp_xxx" 即可；
+下载附件也会走带 token 的 API 地址（见 download_asset）。
 """
 
+import base64
 import json
 import os
 import re
+import subprocess
+import sys
 import urllib.error
 import urllib.request
 
@@ -177,17 +185,154 @@ def pick_asset(assets):
             or by_name(".zip") or (assets[0] if assets else None))
 
 
-def default_download_name(tag, asset):
-    """下载到本地的文件名。
+def default_download_name(asset=None, tag=""):
+    """下载到本地的文件名：**固定 DisplayTools.exe，不带版本号**。
 
-    附件本身就叫 DisplayTools.exe，直接落盘会顶掉正在运行的自己（Windows 也
-    不让覆盖运行中的 exe），所以带上版本号区分。
+    版本号在 exe 内部的 theme.APP_VERSION 和 git tag 里，文件名里不再重复一份；
+    正在运行的自己改名/覆盖会失败，所以落盘时先加 .new 后缀（见 staged_path），
+    由更新脚本在旧进程退出后换成正式名字。
     """
-    name = os.path.basename((asset or {}).get("name") or "") or "DisplayTools.exe"
-    stem, ext = os.path.splitext(name)
-    if tag and tag.lower() not in stem.lower():
-        stem = "{}_{}".format(stem, tag)
-    return stem + ext
+    name = os.path.basename((asset or {}).get("name") or "")
+    if not name.lower().endswith(".exe"):
+        name = DOWNLOAD_NAME
+    return name
+
+
+#: 正式文件名（不带版本号）
+DOWNLOAD_NAME = "DisplayTools.exe"
+#: 落盘的临时后缀：运行中的 exe 锁着，先下成 .new，重启时再换名
+STAGED_SUFFIX = ".new"
+
+
+def running_exe_path():
+    """当前运行的 exe 路径；从源码跑（python mainwindow.py）时返回 None。"""
+    if getattr(sys, "frozen", False):
+        try:
+            return os.path.abspath(sys.executable)
+        except Exception:                                   # noqa: BLE001
+            return None
+    return None
+
+
+def can_self_update():
+    """能不能自动替换并重启（只有打包成 exe 运行时才行）。"""
+    return running_exe_path() is not None
+
+
+def staged_path(asset=None, tag=""):
+    """新版本先落到哪儿。
+
+    打包运行时：跟当前 exe 同目录，名字是 `DisplayTools.exe.new`（当前 exe 被
+    锁着，不能直接覆盖；也不改叫带版本号的名字——换名后就是正式的
+    DisplayTools.exe）。从源码跑：落到数据目录的 DisplayTools.exe，不自动替换。
+    """
+    name = default_download_name(asset, tag)
+    target = running_exe_path()
+    if target:
+        return os.path.join(os.path.dirname(target), name + STAGED_SUFFIX)
+    return os.path.join(download_dir(), name)
+
+
+def old_backup_path():
+    """旧版本备份路径（自动更新时把旧 exe 改名成它，起不来能换回去）。"""
+    target = running_exe_path()
+    return target + ".old" if target else ""
+
+
+def swap_command(new_path, target_exe=None, pid=None, wait_seconds=90):
+    """生成"等旧进程退出 → 换文件 → 启动新版本"的 PowerShell 命令。
+
+    为什么用 PowerShell -EncodedCommand 而不是写个 .bat：批处理文件的编码
+    容易和 cmd 的代码页打架（路径里有中文就废），而 -EncodedCommand 传的是
+    UTF-16LE base64，绕开整个编码问题，也不额外留文件。
+    """
+    target_exe = target_exe or running_exe_path()
+    if not target_exe:
+        raise ValueError("只有打包成 exe 运行时才能自动替换")
+    pid = pid or os.getpid()
+    backup = target_exe + ".old"
+    script = """
+$ErrorActionPreference = 'SilentlyContinue'
+$target = {target}
+$new    = {new}
+$backup = {backup}
+$oldPid = {pid}
+# 1) 等旧进程退出（最多 {wait} 秒）
+for ($i = 0; $i -lt {loops}; $i++) {{
+    if (-not (Get-Process -Id $oldPid -ErrorAction SilentlyContinue)) {{ break }}
+    Start-Sleep -Milliseconds 500
+}}
+# 2) 旧版留一份 .old（下次更新时再清掉），新文件就位
+if (Test-Path -LiteralPath $backup) {{ Remove-Item -LiteralPath $backup -Force }}
+if (Test-Path -LiteralPath $target) {{
+    Rename-Item -LiteralPath $target -NewName (Split-Path -Leaf $backup) -Force
+}}
+$moved = $false
+for ($i = 0; $i -lt 20; $i++) {{
+    Move-Item -LiteralPath $new -Destination $target -Force -ErrorAction SilentlyContinue
+    if (Test-Path -LiteralPath $target) {{ $moved = $true; break }}
+    Start-Sleep -Milliseconds 500
+}}
+# 3) 换不上去就把旧版放回去，别让用户没有 exe 可用
+if (-not $moved) {{
+    if ((-not (Test-Path -LiteralPath $target)) -and (Test-Path -LiteralPath $backup)) {{
+        Rename-Item -LiteralPath $backup -NewName (Split-Path -Leaf $target) -Force
+    }}
+    Start-Process -FilePath $target
+    exit 0
+}}
+Start-Sleep -Milliseconds 800
+Start-Process -FilePath $target
+""".format(target=_ps_quote(target_exe),
+           new=_ps_quote(new_path),
+           backup=_ps_quote(backup),
+           pid=int(pid),
+           wait=int(wait_seconds),
+           loops=int(wait_seconds * 2))
+    return script
+
+
+def _ps_quote(text):
+    """PowerShell 单引号字符串：内部的单引号写成两个。"""
+    return "'{}'".format(str(text).replace("'", "''"))
+
+
+def start_swap(new_path, target_exe=None, pid=None, wait_seconds=90):
+    """后台启动更新脚本（脱离当前进程，父进程退出后它继续跑）。
+
+    返回启动命令的列表（给日志/自测用）；起不来的话抛异常，由调用方提示。
+    """
+    script = swap_command(new_path, target_exe, pid, wait_seconds)
+    encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+    exe = "powershell.exe"
+    flags = 0
+    if os.name == "nt":
+        # CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP：不弹黑框，父进程退出也不影响
+        # 子进程。注意**不能用 DETACHED_PROCESS**（0x8）：实测那样起的 powershell
+        # 会立刻带着 rc=0 退出、脚本一行都不执行（没有控制台时连 -EncodedCommand
+        # 都不跑），换文件就静默失败。
+        flags = 0x08000000 | 0x00000200
+    args = [exe, "-NoProfile", "-ExecutionPolicy", "Bypass",
+            "-EncodedCommand", encoded]
+    subprocess.Popen(args, close_fds=True, creationflags=flags,
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL)
+    return args
+
+
+def cleanup_old_backup():
+    """启动成功后清掉上一次更新留下的 .old（在安全窗口之后调用）。
+
+    返回被删掉的路径（没有就返回 ""）。
+    """
+    path = old_backup_path()
+    if not path or not os.path.isfile(path):
+        return ""
+    try:
+        os.remove(path)
+        return path
+    except Exception:                                       # noqa: BLE001
+        return ""
 
 
 # 仓库里放打包产物的目录 / exe 路径（提交进仓库的就是最新版本的 exe，
@@ -301,17 +446,26 @@ def download_asset(asset, dest_path, progress=None, timeout=DOWNLOAD_TIMEOUT):
     tmp = dest_path + ".part"
     done = 0
     request = urllib.request.Request(url, headers=headers)
-    with _OPENER.open(request, timeout=timeout) as response:
-        total = int(response.headers.get("Content-Length") or 0)
-        with open(tmp, "wb") as handle:
-            while True:
-                chunk = response.read(CHUNK)
-                if not chunk:
-                    break
-                handle.write(chunk)
-                done += len(chunk)
-                if callable(progress):
-                    progress(done, total)
+    try:
+        with _OPENER.open(request, timeout=timeout) as response:
+            total = int(response.headers.get("Content-Length") or 0)
+            with open(tmp, "wb") as handle:
+                while True:
+                    chunk = response.read(CHUNK)
+                    if not chunk:
+                        break
+                    handle.write(chunk)
+                    done += len(chunk)
+                    if callable(progress):
+                        progress(done, total)
+    except Exception:
+        # 半截文件（.part）别留在 exe 目录里碍事
+        try:
+            if os.path.isfile(tmp):
+                os.remove(tmp)
+        except Exception:                                   # noqa: BLE001
+            pass
+        raise
     os.replace(tmp, dest_path)
     return dest_path
 

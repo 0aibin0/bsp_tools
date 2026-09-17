@@ -636,7 +636,23 @@ class MainWindow(QMainWindow):
 
     def show_changelog(self):
         self._info_box("更新日志",
-                       "v3.2.14 (当前)\n"
+                       "v3.2.15 (当前)\n"
+                       "  - 检查更新改成「下载并重启」：安装包名字固定 DisplayTools.exe\n"
+                       "    （不再叫 DisplayTools_vX.Y.Z.exe）；下载完成后自动退出旧进程、\n"
+                       "    换掉旧 exe、启动新版本，不用再手动改名覆盖。\n"
+                       "  - 换文件的顺序：新版本先落成 DisplayTools.exe.new（运行中的 exe\n"
+                       "    锁着，覆盖不了）→ 旧 exe 改名成 DisplayTools.exe.old → 新文件\n"
+                       "    就位成 DisplayTools.exe → 启动。新版启动 3 秒后自己删掉 .old；\n"
+                       "    万一新版起不来，把 .old 改回 DisplayTools.exe 就能回退。\n"
+                       "  - 换文件和重启交给一个后台 PowerShell 脚本（-EncodedCommand，\n"
+                       "    UTF-16LE base64），不写 .bat、不留文件，也避开中文路径的编码坑。\n"
+                       "    踩过一个坑：spawn 时用 DETACHED_PROCESS 起的 powershell 会立刻\n"
+                       "    带 rc=0 退出、一行不执行（换文件静默失败），改用 CREATE_NO_WINDOW。\n"
+                       "  - 退出前先存窗口几何 / 上次页面 / 输入框记忆；下载失败会清掉半截\n"
+                       "    的 .part 文件。\n"
+                       "  - selftest 189 → 204 项：用两个假 exe 真跑一遍换文件流程（新文件\n"
+                       "    就位 / 旧版留 .old / 暂存被消费 / .old 能清理）、下载名与文案。\n\n"
+                       "v3.2.14 (2026-09-17)\n"
                        "  - 本机文件从三个合成一个：原来 exe 同目录有 config.ini（设置）、\n"
                        "    favorites.json（命令收藏）、path_bookmarks.json（路径书签），\n"
                        "    现在只有 DisplayTools.json 一个，里面分 config / commands /\n"
@@ -1001,13 +1017,21 @@ class MainWindow(QMainWindow):
             if asset.get("path"):
                 where = "{}里的 {}".format(where, asset["path"])
             lines.append("下载来源：{}".format(where))
-            lines.append("附件：{}（{}）".format(
-                asset.get("name") or "-", update_check.human_size(asset.get("size"))))
-            lines.append("保存到：{}".format(os.path.join(
-                update_check.download_dir(),
-                update_check.default_download_name(tag, asset))))
-            lines.append("下载文件名带版本号：正在运行的 DisplayTools.exe 是锁着的，"
-                         "覆盖不了，也留着它方便回退。")
+            lines.append("安装包：{}（{}）".format(
+                update_check.default_download_name(asset, tag),
+                update_check.human_size(asset.get("size"))))
+            lines.append("保存到：{}".format(update_check.staged_path(asset, tag)))
+            if update_check.can_self_update():
+                lines.append("")
+                lines.append("点「下载并重启」→ 下载完成后自动退出、换掉旧 exe 并启动"
+                             "新版本（文件名固定 DisplayTools.exe，不带版本号）。")
+                lines.append("旧的 exe 会先改名成 DisplayTools.exe.old；新版启动正常后"
+                             "自动清理，万一新版起不来，把它改回 DisplayTools.exe 即可。")
+                lines.append("更新前会先保存窗口位置、上次页面与输入框记忆。")
+            else:
+                lines.append("")
+                lines.append("当前是从源码运行（python mainwindow.py），不会自动替换；"
+                             "打包成 exe 运行时才能「下载并重启」。")
         else:
             lines.append("这个版本没有可下载的安装包，点「打开发布页」在浏览器里下载。")
         if result.get("notes"):
@@ -1016,7 +1040,8 @@ class MainWindow(QMainWindow):
 
         actions = [("打开发布页", self._open_release)]
         if asset:
-            actions.insert(0, ("下载新版本", lambda: self.download_update(result)))
+            label = "下载并重启" if update_check.can_self_update() else "下载新版本"
+            actions.insert(0, (label, lambda: self.download_update(result)))
         dialog = info_dialog.InfoDialog("发现新版本 {}".format(tag or ""),
                                         chr(10).join(lines), self,
                                         width=760, height=480, actions=actions)
@@ -1029,19 +1054,22 @@ class MainWindow(QMainWindow):
         return False
 
     def download_update(self, result=None):
-        """后台把新版本下载到本地（先写 .part，好了再改名）。"""
+        """后台下载新版本，好了就自动换文件并重启（打包运行时）。
+
+        落盘位置见 update_check.staged_path()：运行中的 exe 锁着，先下成
+        `DisplayTools.exe.new`，由更新脚本在旧进程退出后换成正式的
+        `DisplayTools.exe`（**不带版本号**）。
+        """
         result = result or (getattr(self, "_update_checker", None).result or {})
         asset = result.get("asset") or {}
         if not asset:
-            self.toast("这个版本没有可下载的附件，请打开发布页下载", "warning", 5000)
+            self.toast("这个版本没有可下载的安装包，请打开发布页下载", "warning", 5000)
             return False
-        tag = result.get("tag") or ""
-        dest = os.path.join(update_check.download_dir(),
-                            update_check.default_download_name(tag, asset))
         if getattr(self, "_update_downloader", None) is not None \
                 and self._update_downloader.isRunning():
             self.toast("正在下载…", "info", 1500)
             return True
+        dest = update_check.staged_path(asset, result.get("tag") or "")
 
         downloader = update_check.UpdateDownloader(asset, dest, self)
         self._update_downloader = downloader
@@ -1061,21 +1089,54 @@ class MainWindow(QMainWindow):
             if kind != "ok":
                 self.toast(message, "error", 6000)
                 return
-            self.toast("新版本已下载：{}".format(os.path.basename(message)), "success", 6000)
-            dialog = info_dialog.InfoDialog(
-                "下载完成",
-                "新版本已保存到：\n{}\n\n"
-                "用法：退出当前程序，把新文件改名成 DisplayTools.exe 覆盖旧的即可"
-                "（旧文件建议先留着，新版本起不来能马上回退）。".format(message),
-                self, width=620, height=360,
-                actions=[("打开所在文件夹", lambda: (self._open_folder(message), False)[1])])
-            dialog.exec_()
+            self._finish_update(message)
 
         downloader.progress.connect(on_progress)
         downloader.finished_with.connect(on_done)
         downloader.start()
         self.toast("开始下载：{}".format(os.path.basename(dest)), "info", 3000)
         return True
+
+    def _finish_update(self, downloaded):
+        """下载完成后：自动替换并重启；从源码跑就只提示文件位置。"""
+        if not update_check.can_self_update():
+            self.toast("新版本已下载：{}".format(os.path.basename(downloaded)),
+                       "success", 6000)
+            info_dialog.InfoDialog(
+                "下载完成",
+                "新版本已保存到：\n{}\n\n（当前是从源码运行，不会自动替换；"
+                "打包成 exe 后点下载会自动退出并启动新版本。）".format(downloaded),
+                self, width=620, height=340,
+                actions=[("打开所在文件夹",
+                          lambda: (self._open_folder(downloaded), False)[1])]).exec_()
+            return
+
+        target = update_check.running_exe_path()
+        try:
+            update_check.start_swap(downloaded, target)
+        except Exception as exc:                            # noqa: BLE001
+            self.toast("启动更新脚本失败（{}），文件已下载：{}".format(
+                type(exc).__name__, os.path.basename(downloaded)), "error", 8000)
+            return
+        self.toast("新版本已下载，正在退出并启动新版…", "success", 4000)
+        # 给浮层留一点时间显示，然后退出；换文件和启动由后台脚本负责
+        QTimer.singleShot(1200, self._quit_for_update)
+
+    def _quit_for_update(self):
+        """退出前把该存的存上（窗口几何 / 上次页面 / 输入框记忆）。
+
+        换文件和启动新版由后台的 PowerShell 脚本负责：它先用 PID 等这个进程
+        退出，再把旧 exe 改名成 .old、新文件就位、启动新版本。
+        """
+        try:
+            self._save_geometry()
+        except Exception:                                   # noqa: BLE001
+            pass
+        app = QApplication.instance()
+        if app is not None:
+            app.quit()
+        else:
+            self.close()
 
     @staticmethod
     def _open_folder(path):
@@ -1111,6 +1172,11 @@ def main():
     window._single_instance = guard          # 保住引用，否则会被回收
 
     window.show()
+
+    # 自动更新留下的旧版备份：新版能正常起来（3 秒后事件循环还活着）才清掉，
+    # 万一新版启动就崩，DisplayTools.exe.old 还在，改回名字就能用
+    QTimer.singleShot(3000, lambda: update_check.cleanup_old_backup())
+
     return app.exec_()
 
 

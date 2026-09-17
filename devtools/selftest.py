@@ -1105,6 +1105,36 @@ def main():
     finally:
         shutil.rmtree(sandbox, ignore_errors=True)
 
+    print("\n[18] Shell Tools：命令框挪到 func 且吃得满宽度")
+    window.resize(1360, 840)
+    window.nav.select("shell")
+    for _ in range(8):
+        app.processEvents()
+    shell = window.pages["shell"]
+    cmd = shell.debug_shell_cmd
+    check("命令框挂在 func 卡上（groupBox_6）",
+          cmd.parent() is not None and cmd.parent().objectName() == "groupBox_6",
+          cmd.parent().objectName() if cmd.parent() is not None else "无父级")
+    check("Debug 卡里已经没有命令框",
+          shell.groupBox_debug.findChild(type(cmd), "debug_shell_cmd") is None)
+    check("命令框宽度 ≥ 600px（1360 窗口下吃满整行剩余宽度）",
+          cmd.width() >= 600, "实得 %d" % cmd.width())
+    check("命令框里能装下 60 个以上西文字符",
+          cmd.width() / 7.5 >= 60, "%d 个" % int(cmd.width() / 7.5))
+    check("Run / Stop 还在命令框右边",
+          shell.debug_shell_run.x() > cmd.x() + cmd.width() - 5
+          and shell.debug_shell_stop.x() > shell.debug_shell_run.x(),
+          "cmd=%d run=%d stop=%d" % (cmd.x(), shell.debug_shell_run.x(),
+                                     shell.debug_shell_stop.x()))
+    check("Debug 卡搬走命令框后只剩 density / printk（比 ylog 矮）",
+          shell.groupBox_debug.minimumSizeHint().height()
+          < shell.groupBox_3.minimumSizeHint().height(),
+          "debug=%d ylog=%d" % (shell.groupBox_debug.minimumSizeHint().height(),
+                                shell.groupBox_3.minimumSizeHint().height()))
+    check("命令框回车就是执行（placeholder 不是空话）",
+          "回车" in cmd.lineEdit().placeholderText(),
+          cmd.lineEdit().placeholderText())
+
     # 收尾
     window.pages["tools"].stop_background()
     app.processEvents()

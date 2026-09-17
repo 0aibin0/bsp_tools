@@ -197,28 +197,13 @@ class Ui_ShellTools(object):
         self.groupBox_debug, debug_layout = self._group(
             parent, "groupBox_debug", "Debug")
 
-        # 第 1 行：自定义命令 + Run/Stop
-        shell_row = QtWidgets.QHBoxLayout()
-        shell_row.setSpacing(5)
-        self.debug_shell_cmd = QtWidgets.QComboBox(self.groupBox_debug)
-        self.debug_shell_cmd.setEditable(True)
-        self.debug_shell_cmd.setMinimumHeight(28)
-        self.debug_shell_cmd.setMinimumWidth(250)
-        self.debug_shell_cmd.lineEdit().setPlaceholderText("adb shell 命令…")
-        self.debug_shell_cmd.setObjectName("debug_shell_cmd")
-        shell_row.addWidget(self.debug_shell_cmd, 1)
-        self.debug_shell_run = self._button(
-            self.groupBox_debug, "debug_shell_run", "Run", height=28)
-        self._accent(self.debug_shell_run)
-        shell_row.addWidget(self.debug_shell_run)
-        self.debug_shell_stop = self._button(
-            self.groupBox_debug, "debug_shell_stop", "Stop", height=28)
-        shell_row.addWidget(self.debug_shell_stop)
-        debug_layout.addLayout(shell_row)
+        # 自定义命令那一行（命令框 + Run/Stop）已搬到「func」卡：它在半宽卡里
+        # 只有 250px，长命令（adb shell 后面跟一串参数）根本看不全；func 是整宽卡，
+        # 同样一行能拿到 ~660px。见 _build_func_group()。
 
-        # 第 2 行：density（push/pull/I2C 已下线——文件传输走常用工具页的
+        # 第 1 行：density（push/pull/I2C 已下线——文件传输走常用工具页的
         # 「文件管理」，那边是浏览+上传+下载+删除的超集；I2C/SPI 是板级一次性
-        # 确认，需要时用上面的自定义命令跑）
+        # 确认，需要时用 func 卡里的自定义命令跑）
         # 三个控件等宽撑满整行：控件挤在左边、右边空一大截会显得没排完
         tools_row = QtWidgets.QHBoxLayout()
         tools_row.setSpacing(5)
@@ -237,7 +222,7 @@ class Ui_ShellTools(object):
         tools_row.addWidget(self.debug_density_set, 1)
         debug_layout.addLayout(tools_row)
 
-        # 第 3 行：printk
+        # 第 2 行：printk
         printk_row = QtWidgets.QHBoxLayout()
         printk_row.setSpacing(5)
         printk_row.addWidget(QtWidgets.QLabel("printk:", self.groupBox_debug))
@@ -302,15 +287,18 @@ class Ui_ShellTools(object):
         flash_layout.addLayout(flash_row)
 
     def _build_func_group(self, parent):
-        """func：4 个功能键排一行。
+        """func：4 个功能键 + 自定义命令（原本在 Debug 卡里）。
 
         按 func-list 精简：
         - 背光滑块去掉（常用工具页的「显示调试」里有更完整的一份）
         - 「pull」（截图 + 拉取到本地）去掉——侧边栏「快捷操作 → 截图并保存」
           调的是同一个 on_sc_pull()，留着就是重复入口；只截图不拉取的
           「screencap」保留，两者不等价。
+
+        adb shell 命令框从 Debug（半宽卡，只有 250px）搬到这里：func 是整宽卡，
+        命令框吃满剩余宽度（1360 窗口下约 660px），长命令能一眼看全，不用左右拖。
         """
-        self.groupBox_6, func_layout = self._group(parent, "groupBox_6", "func")
+        self.groupBox_6, func_layout = self._group(parent, "groupBox_6", "func / 自定义命令")
 
         grid = QtWidgets.QGridLayout()
         grid.setSpacing(6)
@@ -329,6 +317,28 @@ class Ui_ShellTools(object):
         for col in range(len(func_buttons)):
             grid.setColumnStretch(col, 1)
         func_layout.addLayout(grid)
+
+        # 自定义命令：命令框吃满整行，Run / Stop 固定在最右
+        shell_row = QtWidgets.QHBoxLayout()
+        shell_row.setSpacing(5)
+        self.debug_shell_cmd = QtWidgets.QComboBox(self.groupBox_6)
+        self.debug_shell_cmd.setEditable(True)
+        self.debug_shell_cmd.setMinimumHeight(28)
+        # 只留一个"不被压没"的下限，宽度交给 stretch=1 撑满（原来在半宽卡里
+        # 写死 250px，长命令看不全）
+        self.debug_shell_cmd.setMinimumWidth(160)
+        self.debug_shell_cmd.lineEdit().setPlaceholderText(
+            "adb shell 命令…（可写长命令，回车执行）")
+        self.debug_shell_cmd.setObjectName("debug_shell_cmd")
+        shell_row.addWidget(self.debug_shell_cmd, 1)
+        self.debug_shell_run = self._button(
+            self.groupBox_6, "debug_shell_run", "Run", height=28)
+        self._accent(self.debug_shell_run)
+        shell_row.addWidget(self.debug_shell_run)
+        self.debug_shell_stop = self._button(
+            self.groupBox_6, "debug_shell_stop", "Stop", height=28)
+        shell_row.addWidget(self.debug_shell_stop)
+        func_layout.addLayout(shell_row)
         func_layout.addStretch(1)
 
     # ---------- ylog ----------

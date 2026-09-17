@@ -636,7 +636,18 @@ class MainWindow(QMainWindow):
 
     def show_changelog(self):
         self._info_box("更新日志",
-                       "v3.2.15 (当前)\n"
+                       "v3.2.16 (当前)\n"
+                       "  - Shell Tools 的 adb shell 命令框从 Debug 卡搬到 func 卡，\n"
+                       "    宽度吃满整行剩余宽度：1360 窗口下 674px（约 89 个西文字符），\n"
+                       "    1920 窗口下 1234px（约 164 个）——以前挤在半宽卡里只有 250px，\n"
+                       "    长命令根本看不全，得左右拖着看。Run / Stop 仍在右边紧挨着。\n"
+                       "  - func 卡改叫「func / 自定义命令」，Debug 卡只剩 density / printk\n"
+                       "    （命令框搬走后自然矮了一行）。两卡高度基本不变，整页仍无纵向\n"
+                       "    滚动条（1360x840 下左列底部 653 / 可用 721）。\n"
+                       "  - 命令框的下限宽度从写死的 250px 降到 160px，窄窗口下不再顶宽模块。\n"
+                       "  - selftest 204 → 211 项：断言命令框挂在 func、Debug 里已无命令框、\n"
+                       "    宽度 ≥600px、Run/Stop 顺序、回车能执行。\n\n"
+                       "v3.2.15 (2026-09-17)\n"
                        "  - 检查更新改成「下载并重启」：安装包名字固定 DisplayTools.exe\n"
                        "    （不再叫 DisplayTools_vX.Y.Z.exe）；下载完成后自动退出旧进程、\n"
                        "    换掉旧 exe、启动新版本，不用再手动改名覆盖。\n"

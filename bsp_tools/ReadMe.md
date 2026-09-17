@@ -13,7 +13,7 @@ python mainwindow.py
 | 页面 | 说明 |
 | --- | --- |
 | 常用工具 | 9 个模块，见下表 |
-| Shell Tools | fastboot 烧录、Debug 自定义命令与 density/printk、func 功能键、GPIO、Download Mode、ylog、APK、投屏（adb 类命令都在侧边栏「快捷操作」和 Ctrl+K 命令面板里，页面不再重复摆一份） |
+| Shell Tools | fastboot 烧录、func 功能键 + **自定义命令框（整宽，长命令一眼看全）**、Debug 的 density/printk、GPIO、Download Mode、ylog、APK、投屏（adb 类命令都在侧边栏「快捷操作」和 Ctrl+K 命令面板里，页面不再重复摆一份） |
 | Initcode Builder | 寄存器读写描述 ↔ initcode 字节序列（正反向） |
 | LK → Kernel | LK 十六进制序列 → 内核格式 |
 | Kernel → LK | 内核十六进制序列 → LK 格式 |
@@ -132,7 +132,7 @@ run_checks.bat device     # 再加上真机相关的 4 项（要连板子）
 .venv\Scripts\python.exe devtools\check_layout.py      # 布局健康检查：多种窗口尺寸下检测重叠/压缩/越界
 .venv\Scripts\python.exe devtools\check_panel_width.py # 右侧两个面板的文本框必须都是 240px（固定，不随窗口变）
 .venv\Scripts\python.exe devtools\check_wraplabel.py   # 自动换行标签高度是否够（inspect_ui 的盲区）
-.venv\Scripts\python.exe devtools\selftest.py          # 逻辑自测 204 项（不需要连接设备）
+.venv\Scripts\python.exe devtools\selftest.py          # 逻辑自测 211 项（不需要连接设备）
 .venv\Scripts\python.exe devtools\check_theme.py       # 浅色/深色令牌完整性与残留检查
 .venv\Scripts\python.exe devtools\check_timing.py      # 时序/带宽公式 + 文本解析 + DCS 包构造
 .venv\Scripts\python.exe devtools\check_multidevice.py # 多设备 -s 注入（保证不会出现两个 -s）

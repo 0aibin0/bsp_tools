@@ -239,12 +239,17 @@ def old_backup_path():
     return target + ".old" if target else ""
 
 
-def swap_command(new_path, target_exe=None, pid=None, wait_seconds=90):
+def swap_command(new_path, target_exe=None, pid=None, wait_seconds=90,
+                 expected_size=0):
     """生成"等旧进程退出 → 换文件 → 启动新版本"的 PowerShell 命令。
 
     为什么用 PowerShell -EncodedCommand 而不是写个 .bat：批处理文件的编码
     容易和 cmd 的代码页打架（路径里有中文就废），而 -EncodedCommand 传的是
     UTF-16LE base64，绕开整个编码问题，也不额外留文件。
+
+    expected_size > 0 时脚本会先核对新文件大小：对不上就直接启动旧版本退出，
+    不给"半截 exe 换上去 → 启动弹 DLL 报错"留任何机会（Python 侧已经校验过一次，
+    这里是第二道保险）。
     """
     target_exe = target_exe or running_exe_path()
     if not target_exe:
@@ -257,6 +262,12 @@ $target = {target}
 $new    = {new}
 $backup = {backup}
 $oldPid = {pid}
+$expected = {expected}
+# 0) 新文件不完整就别动旧版本（第二道保险）
+if (($expected -gt 0) -and ((Get-Item -LiteralPath $new).Length -ne $expected)) {{
+    Start-Process -FilePath $target
+    exit 0
+}}
 # 1) 等旧进程退出（最多 {wait} 秒）
 for ($i = 0; $i -lt {loops}; $i++) {{
     if (-not (Get-Process -Id $oldPid -ErrorAction SilentlyContinue)) {{ break }}
@@ -287,6 +298,7 @@ Start-Process -FilePath $target
            new=_ps_quote(new_path),
            backup=_ps_quote(backup),
            pid=int(pid),
+           expected=int(expected_size or 0),
            wait=int(wait_seconds),
            loops=int(wait_seconds * 2))
     return script
@@ -297,12 +309,13 @@ def _ps_quote(text):
     return "'{}'".format(str(text).replace("'", "''"))
 
 
-def start_swap(new_path, target_exe=None, pid=None, wait_seconds=90):
+def start_swap(new_path, target_exe=None, pid=None, wait_seconds=90,
+               expected_size=0):
     """后台启动更新脚本（脱离当前进程，父进程退出后它继续跑）。
 
     返回启动命令的列表（给日志/自测用）；起不来的话抛异常，由调用方提示。
     """
-    script = swap_command(new_path, target_exe, pid, wait_seconds)
+    script = swap_command(new_path, target_exe, pid, wait_seconds, expected_size)
     encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
     exe = "powershell.exe"
     flags = 0
@@ -430,15 +443,28 @@ def download_dir():
     return fallback if os.path.isdir(fallback) else os.path.expanduser("~")
 
 
-def download_asset(asset, dest_path, progress=None, timeout=DOWNLOAD_TIMEOUT):
-    """把附件下载到 dest_path（先写 .part，成功后再改名）。
+def download_asset(asset, dest_path, progress=None, timeout=DOWNLOAD_TIMEOUT,
+                   expected_size=0, validate=True):
+    """把附件下载到 dest_path（先写 .part，**校验通过后**才改名）。
 
     progress: 可选回调 progress(已下载字节, 总字节, 总字节为 0 表示未知)。
     返回实际落盘路径；异常照旧往上抛。
+
+    下载完整性在改名之前就把关，三道：
+      1. Content-Length 和实收字节数；
+      2. 附件元数据里声明的大小（GitHub 会给出真实大小）；
+      3. validate 时再做一次 exe 体检（MZ 头 + 大小下限）。
+    任何一条不过 → 删掉 .part 并报错，**绝不把一个截断的文件变成 .new**。
+    截断的 exe 一旦被换成正式版本，新程序启动只会弹一个
+    "Error loading Python DLL" 的 DLL 报错，用户根本不知道发生了什么
+    （公司代理会悄悄断连接，实测能复现）。
     """
     url, headers = download_target(asset)
     if not url:
         raise ValueError("附件没有可下载地址")
+    # 附件元数据里声明的大小也要对得上（GitHub 的 contents/release 接口都会给），
+    # 调用方没显式传 expected_size 时就用它兜底
+    expected = expected_size or asset_size(asset)
 
     directory = os.path.dirname(os.path.abspath(dest_path))
     if directory:
@@ -460,14 +486,75 @@ def download_asset(asset, dest_path, progress=None, timeout=DOWNLOAD_TIMEOUT):
                         progress(done, total)
     except Exception:
         # 半截文件（.part）别留在 exe 目录里碍事
-        try:
-            if os.path.isfile(tmp):
-                os.remove(tmp)
-        except Exception:                                   # noqa: BLE001
-            pass
+        _remove_quietly(tmp)
         raise
+    if total and done != total:
+        _remove_quietly(tmp)
+        raise DownloadError(
+            "下载不完整：收到 {} 字节，应该 {} 字节（网络/代理中途断了）".format(done, total))
+    if expected and done != expected:
+        _remove_quietly(tmp)
+        raise DownloadError(
+            "下载不完整：收到 {} 字节，附件声明 {} 字节".format(done, expected))
+    if validate and dest_path.lower().endswith(".exe"):
+        ok, detail = verify_update_file(tmp, expected)
+        if not ok:
+            _remove_quietly(tmp)
+            raise DownloadError("下载的文件不可用：{}".format(detail))
     os.replace(tmp, dest_path)
     return dest_path
+
+
+def _remove_quietly(path):
+    try:
+        if path and os.path.isfile(path):
+            os.remove(path)
+    except Exception:                                       # noqa: BLE001
+        pass
+
+
+class DownloadError(Exception):
+    """下载结果不能用（不完整 / 不是可执行文件）。"""
+
+
+def verify_update_file(path, expected_size=0):
+    """换文件之前的最后一道关：确认这是个完整、像样的 exe。
+
+    返回 (ok, 说明)。这里挡住的都是实测踩过的坑：
+    - 代理把连接掐了 → 文件只有一半 → 换上去新版本启动弹 DLL 报错；
+    - 下到了 HTML 错误页（某些代理会返回 200 + 错误页）→ 不是 MZ 开头。
+    """
+    if not path or not os.path.isfile(path):
+        return False, "文件不存在：{}".format(path or "-")
+    size = os.path.getsize(path)
+    if expected_size and size != expected_size:
+        return False, "大小不符：实得 {} 字节 / 应有 {} 字节".format(size, expected_size)
+    if size < 1024 * 1024:
+        return False, "文件太小（{} 字节），不像完整的安装包".format(size)
+    try:
+        with open(path, "rb") as handle:
+            head = handle.read(2)
+    except Exception as exc:                                # noqa: BLE001
+        return False, "读不出文件头：{}".format(type(exc).__name__)
+    if head != b"MZ":
+        return False, "不是 Windows 可执行文件（缺少 MZ 头，可能下到了错误页）"
+    return True, "{:.1f} MB".format(size / 1024.0 / 1024.0)
+
+
+def asset_size(asset):
+    try:
+        return int((asset or {}).get("size") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def pending_update_path():
+    """上次下载好但还没换上去的新版本（DisplayTools.exe.new）；没有返回 ""。"""
+    target = running_exe_path()
+    if not target:
+        return ""
+    path = target + STAGED_SUFFIX
+    return path if os.path.isfile(path) else ""
 
 
 class UpdateChecker(QThread):
@@ -572,10 +659,15 @@ class UpdateChecker(QThread):
 
 
 class UpdateDownloader(QThread):
-    """后台下载新版本，边下边报进度。"""
+    """后台下载新版本，边下边报进度。
+
+    下完先自己校验一遍（大小 / MZ 头）；不合格就直接删掉并报错，
+    **不会**把半截文件留给换文件流程。
+    """
 
     progress = pyqtSignal(int, int)            # 已下载字节, 总字节（0 = 未知）
     finished_with = pyqtSignal(str, str)       # kind: ok / error, message(成功=路径)
+    rejected = pyqtSignal(str)                 # 校验不通过的原因（对象已删）
 
     def __init__(self, asset, dest_path, parent=None):
         super().__init__(parent)
@@ -586,17 +678,34 @@ class UpdateDownloader(QThread):
     def stop(self):
         self._stop = True
 
+    def expected_size(self):
+        return asset_size(self.asset)
+
     def run(self):
         try:
             path = download_asset(
                 self.asset, self.dest_path,
-                progress=lambda done, total: self.progress.emit(done, total))
+                progress=lambda done, total: self.progress.emit(done, total),
+                expected_size=self.expected_size())
+        except DownloadError as exc:
+            self.finished_with.emit(
+                "error", "{}\n\n已丢弃这个不完整的文件，可以重试，"
+                         "或到发布页手动下载：{}".format(exc, releases_url()))
+            return
         except Exception as exc:                            # noqa: BLE001
             self.finished_with.emit(
                 "error", "下载失败（{}）：可在浏览器里打开 {}".format(
                     type(exc).__name__, releases_url()))
             return
         if self._stop:
+            return
+        ok, detail = verify_update_file(path, self.expected_size())
+        if not ok:
+            _remove_quietly(path)
+            self.rejected.emit(detail)
+            self.finished_with.emit(
+                "error", "下载校验没通过：{}\n\n已丢弃这个文件，可以重试，"
+                         "或到发布页手动下载：{}".format(detail, releases_url()))
             return
         self.finished_with.emit("ok", path)
 

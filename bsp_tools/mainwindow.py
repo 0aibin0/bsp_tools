@@ -22,6 +22,7 @@ import app_config
 import app_runtime
 import command_palette
 import command_store
+import download_dialog
 import info_dialog
 import theme
 import toolchain
@@ -621,14 +622,17 @@ class MainWindow(QMainWindow):
 
     # ================= 对话框 =================
 
-    def _info_box(self, title, text, width=None, height=None):
+    def _info_box(self, title, text, width=None, height=None, actions=None):
         """说明框：固定尺寸 + 正文可滚动。
 
         以前用 QMessageBox.setText()，正文是 QLabel，文字一长对话框就跟着长，
         超出屏幕的部分完全看不到（更新日志就是这么"看不全"的）。
+
+        更新检查的结果都走这里：结果必须留在屏幕上让用户看清，不能像浮层那样
+        几秒就消失（"点了一下弹窗一闪而过"就是这么来的）。
         """
         dialog = info_dialog.InfoDialog(
-            title, text, self,
+            title, text, self, actions=actions,
             **({} if width is None else {"width": width}),
             **({} if height is None else {"height": height}))
         dialog.exec_()
@@ -636,7 +640,26 @@ class MainWindow(QMainWindow):
 
     def show_changelog(self):
         self._info_box("更新日志",
-                       "v3.2.16 (当前)\n"
+                       "v3.2.17 (当前)\n"
+                       "  - 修「自动更新完重启报 DLL 错误」：根因是下载被代理中途掐断，\n"
+                       "    半截 exe 被换了上去（实测复现：39MB 的包只收到 20MB，换完\n"
+                       "    新版本启动只剩一个 Error 弹窗）。现在三道关：\n"
+                       "      1) 下载时对比 Content-Length 和实收字节，对不上直接报\n"
+                       "         「下载不完整」并删掉半截文件；\n"
+                       "      2) 换文件前校验大小 + MZ 头（防止下到错误页），不合格\n"
+                       "         的文件丢掉、当前版本不动；\n"
+                       "      3) 换文件脚本自己再核一次期望大小，对不上就照旧启动旧版。\n"
+                       "  - 修「点检查更新弹窗一闪而过」：结果不再用几秒就消失的浮层，\n"
+                       "    一律弹「留得住」的对话框——已是最新 / 检查失败 / 发现新版本\n"
+                       "    都写明结论和版本号，失败时附发布页；下载也换成常驻进度框\n"
+                       "    （百分比 + 已下载/总大小），下完弹「更新就绪」框：8 秒倒计时\n"
+                       "    自动重启，也可以点「立即重启」或先不重启。\n"
+                       "  - 上次下载了但没重启的包会在启动时提示一次（可立即重启 / 删除），\n"
+                       "    不会白下载；顺手清掉校验不过的残留文件。\n"
+                       "  - selftest 211 → 228 项：截断下载必须被拒（真的起一个只发 1/4\n"
+                       "    响应体的 HTTP 服务）、换文件大小闸门（不替换旧 exe）、\n"
+                       "    校验函数四种坏输入、结果对话框（不是浮层）。\n\n"
+                       "v3.2.16 (2026-09-17)\n"
                        "  - Shell Tools 的 adb shell 命令框从 Debug 卡搬到 func 卡，\n"
                        "    宽度吃满整行剩余宽度：1360 窗口下 674px（约 89 个西文字符），\n"
                        "    1920 窗口下 1234px（约 164 个）——以前挤在半宽卡里只有 250px，\n"
@@ -993,24 +1016,35 @@ class MainWindow(QMainWindow):
     # ================= 更新检查 =================
 
     def check_updates(self):
-        """手动触发一次版本检查（后台线程，失败只提示不弹窗）。
+        """手动触发一次版本检查（后台线程）。
 
-        查到新版本时，如果 release 里带了可下载的附件，就直接问要不要下载；
-        没有附件（或只有 tag）就退回提示 + 打开发布页。
+        结果**一律用对话框弹出来**，不再用右下角浮层：浮层几秒就消失，
+        用户看到的只是"弹窗一闪而过"，根本来不及看结论。
         """
         if getattr(self, "_update_checker", None) is not None \
                 and self._update_checker.isRunning():
             self.toast("正在检查更新…", "info", 1500)
             return
-        self.toast("正在检查更新…", "info", 1500)
+        self.toast("正在检查更新…", "info", 2500)
 
         checker = update_check.UpdateChecker(self)
 
         def done(kind, message):
             if kind == "newer":
                 self._offer_update(message)
+            elif kind == "ok":
+                self._info_box(
+                    "检查更新",
+                    "{}\n\n当前版本：{}\n远端最新版本：{}".format(
+                        message, theme.APP_VERSION,
+                        getattr(checker, "result", {}).get("tag") or "-"),
+                    actions=[("打开仓库", self._open_repo)])
             else:
-                self.toast(message, "success" if kind == "ok" else "error", 5200)
+                self._info_box(
+                    "检查更新失败",
+                    "{}\n\n网络不通时可以直接在浏览器里看：\n{}".format(
+                        message, update_check.releases_url()),
+                    actions=[("打开发布页", self._open_release)])
 
         checker.finished_with.connect(done)
         checker.finished.connect(lambda: setattr(self, "_update_checker", None))
@@ -1052,7 +1086,9 @@ class MainWindow(QMainWindow):
         actions = [("打开发布页", self._open_release)]
         if asset:
             label = "下载并重启" if update_check.can_self_update() else "下载新版本"
-            actions.insert(0, (label, lambda: self.download_update(result)))
+            # 点了下载就把这个框关掉：下载进度框会接管（两层模态叠着容易看花眼）
+            actions.insert(0, (label,
+                               lambda: (self.download_update(result), False)[1]))
         dialog = info_dialog.InfoDialog("发现新版本 {}".format(tag or ""),
                                         chr(10).join(lines), self,
                                         width=760, height=480, actions=actions)
@@ -1074,64 +1110,157 @@ class MainWindow(QMainWindow):
         result = result or (getattr(self, "_update_checker", None).result or {})
         asset = result.get("asset") or {}
         if not asset:
-            self.toast("这个版本没有可下载的安装包，请打开发布页下载", "warning", 5000)
+            self._info_box(
+                "没有可下载的安装包",
+                "这个版本没有可下载的安装包，点「打开发布页」在浏览器里下载。\n\n{}"
+                .format(update_check.releases_url()),
+                actions=[("打开发布页", self._open_release)])
             return False
         if getattr(self, "_update_downloader", None) is not None \
                 and self._update_downloader.isRunning():
             self.toast("正在下载…", "info", 1500)
             return True
         dest = update_check.staged_path(asset, result.get("tag") or "")
+        expected = update_check.asset_size(asset)
 
         downloader = update_check.UpdateDownloader(asset, dest, self)
         self._update_downloader = downloader
-        self._download_reported = 0
+
+        # 下载期间一直开着进度框（不是 1.5 秒就消失的浮层）
+        progress_dialog = download_dialog.DownloadDialog(
+            os.path.basename(dest), expected, self)
 
         def on_progress(done, total):
-            # 每 10% 报一次，免得浮层刷屏
-            if not total:
-                return
-            percent = int(done * 100 / total)
-            if percent >= self._download_reported + 10 or percent >= 100:
-                self._download_reported = percent
-                self.toast("正在下载新版本… {}%".format(percent), "info", 1500)
+            progress_dialog.set_progress(done, total)
 
         def on_done(kind, message):
             self._update_downloader = None
+            try:
+                progress_dialog.accept()
+            except Exception:                               # noqa: BLE001
+                pass
             if kind != "ok":
-                self.toast(message, "error", 6000)
+                # 失败原因留在对话框里（含"下载不完整"这类校验结论）
+                self._info_box("下载失败", message,
+                               actions=[("打开发布页", self._open_release)])
                 return
-            self._finish_update(message)
+            self._finish_update(message, expected)
 
         downloader.progress.connect(on_progress)
         downloader.finished_with.connect(on_done)
         downloader.start()
-        self.toast("开始下载：{}".format(os.path.basename(dest)), "info", 3000)
+        progress_dialog.open()
         return True
 
-    def _finish_update(self, downloaded):
-        """下载完成后：自动替换并重启；从源码跑就只提示文件位置。"""
+    def _finish_update(self, downloaded, expected=0):
+        """下载完成：先确认文件没问题，再重启（默认 8 秒后自动重启）。"""
+        # 最后一道关：不完整/不像 exe 的文件绝不拿去替换（DLL 报错的根因）
+        ok, detail = update_check.verify_update_file(downloaded, expected)
+        if not ok:
+            update_check._remove_quietly(downloaded)
+            self._info_box(
+                "下载的文件不可用",
+                "校验没通过：{}\n\n文件已丢弃，当前版本没有被改动。\n"
+                "可以重试，或到发布页手动下载：\n{}".format(
+                    detail, update_check.releases_url()),
+                actions=[("打开发布页", self._open_release)])
+            return
+
         if not update_check.can_self_update():
-            self.toast("新版本已下载：{}".format(os.path.basename(downloaded)),
-                       "success", 6000)
             info_dialog.InfoDialog(
                 "下载完成",
-                "新版本已保存到：\n{}\n\n（当前是从源码运行，不会自动替换；"
-                "打包成 exe 后点下载会自动退出并启动新版本。）".format(downloaded),
-                self, width=620, height=340,
+                "新版本已保存到：\n{}\n\n校验通过（{}）。\n\n"
+                "（当前是从源码运行，不会自动替换；打包成 exe 后点下载会退出并"
+                "启动新版本。）".format(downloaded, detail),
+                self, width=640, height=380,
                 actions=[("打开所在文件夹",
                           lambda: (self._open_folder(downloaded), False)[1])]).exec_()
             return
 
         target = update_check.running_exe_path()
+        exe_name = os.path.basename(target)
+        base = (
+            "新版本已下载并通过校验（{}）：\n{}\n\n"
+            "点「立即重启」会退出当前程序 → 旧 exe 改名成 {} → 新文件就位成 {} "
+            "→ 启动新版本。\n"
+            "（新版起来 3 秒后会删掉 .old；万一新版起不来，把 .old 改回 {} 就能回退。）"
+            "\n\n".format(detail, downloaded, exe_name + ".old", exe_name, exe_name))
+        dialog = info_dialog.InfoDialog(
+            "更新就绪", base + "8 秒后自动重启…", self, width=720, height=440,
+            actions=[("立即重启", self._restart_for_update),
+                     ("稍后自己重启（打开所在文件夹）",
+                      lambda: (self._open_folder(downloaded), False)[1])])
+
+        # 倒计时：结果一直在屏幕上，不点也会继续（不是"一闪而过"）
+        state = {"left": 8}
+
+        def tick():
+            state["left"] -= 1
+            if state["left"] <= 0:
+                timer.stop()
+                if dialog.isVisible():
+                    dialog.accept()
+                self._restart_for_update()
+                return
+            try:
+                dialog.view.setPlainText(
+                    base + "{} 秒后自动重启…（点「关闭」可先不重启，文件已就绪，"
+                           "下次启动会提示）".format(state["left"]))
+            except Exception:                               # noqa: BLE001
+                pass
+
+        timer = QTimer(dialog)
+        timer.setInterval(1000)
+        timer.timeout.connect(tick)
+        timer.start()
+        dialog.exec_()
+
+    def _restart_for_update(self):
+        """换文件 + 退出（换文件和启动新版交给后台 PowerShell 脚本）。"""
+        pending = update_check.pending_update_path()
+        if not pending:
+            self._info_box("没找到已下载的新版本",
+                           "没找到已下载的新版本（{}），请重新检查更新。".format(
+                               update_check.staged_path()))
+            return False
+        target = update_check.running_exe_path()
         try:
-            update_check.start_swap(downloaded, target)
+            update_check.start_swap(pending, target,
+                                    expected_size=os.path.getsize(pending))
         except Exception as exc:                            # noqa: BLE001
-            self.toast("启动更新脚本失败（{}），文件已下载：{}".format(
-                type(exc).__name__, os.path.basename(downloaded)), "error", 8000)
+            self._info_box("启动更新脚本失败",
+                           "启动更新脚本失败（{}）。\n文件已就绪：{}".format(
+                               type(exc).__name__, pending))
+            return False
+        self.toast("正在退出并启动新版本…", "success", 3000)
+        QTimer.singleShot(900, self._quit_for_update)
+        return False
+
+    def notify_pending_update(self):
+        """启动时提示"上次下载了但还没重启"的新版本。"""
+        pending = update_check.pending_update_path()
+        if not pending:
             return
-        self.toast("新版本已下载，正在退出并启动新版…", "success", 4000)
-        # 给浮层留一点时间显示，然后退出；换文件和启动由后台脚本负责
-        QTimer.singleShot(1200, self._quit_for_update)
+        ok, detail = update_check.verify_update_file(pending)
+        if not ok:
+            # 半截文件（老版本留下的）直接清掉，免得一直被提示
+            update_check._remove_quietly(pending)
+            return
+        dialog = info_dialog.InfoDialog(
+            "有已下载好的新版本",
+            "上次下载的新版本还没换上：\n{}\n（校验通过，{}）\n\n"
+            "点「立即重启」就会退出当前程序、换掉 {} 并启动新版本；"
+            "点「关闭」则继续用当前版本（文件留着，下次启动再问）。".format(
+                pending, detail, os.path.basename(update_check.running_exe_path() or "")),
+            self, width=660, height=380,
+            actions=[("立即重启", self._restart_for_update),
+                     ("删除下载的文件", self._discard_pending_update)])
+        dialog.exec_()
+
+    def _discard_pending_update(self):
+        update_check._remove_quietly(update_check.pending_update_path())
+        self.toast("已删除待更新的文件", "info", 3000)
+        return False
 
     def _quit_for_update(self):
         """退出前把该存的存上（窗口几何 / 上次页面 / 输入框记忆）。
@@ -1187,6 +1316,9 @@ def main():
     # 自动更新留下的旧版备份：新版能正常起来（3 秒后事件循环还活着）才清掉，
     # 万一新版启动就崩，DisplayTools.exe.old 还在，改回名字就能用
     QTimer.singleShot(3000, lambda: update_check.cleanup_old_backup())
+
+    # 上次下载了但没重启：提示一下，别让已经下好的文件白放着
+    QTimer.singleShot(6000, window.notify_pending_update)
 
     return app.exec_()
 

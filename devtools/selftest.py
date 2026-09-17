@@ -899,7 +899,8 @@ def main():
     import functools
     import tempfile
     serve_dir = tempfile.mkdtemp(prefix="dt-upd-")
-    payload = os.urandom(220 * 1024)
+    # 真实的 exe 头 + 过 1MB 的下限，才能过下载校验（MZ + 大小）
+    payload = b"MZ" + os.urandom(1200 * 1024)
     src = os.path.join(serve_dir, "DisplayTools.exe")
     with open(src, "wb") as handle:
         handle.write(payload)
@@ -920,6 +921,22 @@ def main():
         check("进度回调拿到了总长度", seen and seen[-1][1] == len(payload),
               str(seen[-1:]))
         check("没有留下 .part 残留", not os.path.exists(target + ".part"))
+        # 附件声明的大小和实收不符 → 必须拒绝（代理截断就是这种形态）
+        bad_target = os.path.join(serve_dir, "out", "wrong.exe")
+        raised = None
+        try:
+            update_check.download_asset(
+                {"name": "DisplayTools.exe", "url": local_url,
+                 "browser_download_url": local_url, "size": len(payload) + 999},
+                bad_target)
+        except Exception as exc:                            # noqa: BLE001
+            raised = exc
+        check("附件声明大小不符时拒绝落盘",
+              isinstance(raised, update_check.DownloadError), repr(raised))
+        check("拒绝后不留 .new/.part",
+              not os.path.exists(bad_target)
+              and not os.path.exists(bad_target + ".part"),
+              str(sorted(os.listdir(os.path.join(serve_dir, "out")))))
     except Exception as exc:                                # noqa: BLE001
         check("附件下载成功", False, "{}: {}".format(type(exc).__name__, exc))
     finally:
@@ -1134,6 +1151,167 @@ def main():
     check("命令框回车就是执行（placeholder 不是空话）",
           "回车" in cmd.lineEdit().placeholderText(),
           cmd.lineEdit().placeholderText())
+
+    print("\n[19] 自动更新：下载完整性校验（DLL 报错的根因）")
+    import http.server
+    import threading
+    import functools
+
+    # 1) verify_update_file：完整 / 太小 / 大小不符 / 不是 exe / 不存在
+    vdir = tempfile.mkdtemp(prefix="dt-verify-")
+    try:
+        good = os.path.join(vdir, "good.exe")
+        with open(good, "wb") as handle:
+            handle.write(b"MZ" + os.urandom(2 * 1024 * 1024))
+        small = os.path.join(vdir, "small.exe")
+        with open(small, "wb") as handle:
+            handle.write(b"MZ" + os.urandom(64 * 1024))
+        page = os.path.join(vdir, "page.exe")
+        with open(page, "wb") as handle:
+            handle.write(b"<html>" + os.urandom(2 * 1024 * 1024))
+        check("完整 exe 通过校验", update_check.verify_update_file(good)[0] is True)
+        check("太小的文件不通过（截断）",
+              update_check.verify_update_file(small)[0] is False,
+              str(update_check.verify_update_file(small)))
+        check("大小对不上不通过",
+              update_check.verify_update_file(good, 999)[0] is False)
+        check("不是 PE（下到错误页）不通过",
+              update_check.verify_update_file(page)[0] is False,
+              str(update_check.verify_update_file(page)))
+        check("文件不存在不通过",
+              update_check.verify_update_file(os.path.join(vdir, "no.exe"))[0] is False)
+    finally:
+        shutil.rmtree(vdir, ignore_errors=True)
+
+    # 2) 截断的 HTTP 响应：Content-Length 说 512KB，实际只给 128KB
+    class _TruncatingHandler(http.server.BaseHTTPRequestHandler):
+        body = os.urandom(512 * 1024)
+
+        def log_message(self, *args, **kwargs):
+            pass
+
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", str(len(self.body)))
+            self.end_headers()
+            self.wfile.write(self.body[:len(self.body) // 4])   # 只发 1/4 就断
+            self.close_connection = True
+
+    server2 = http.server.HTTPServer(("127.0.0.1", 0), _TruncatingHandler)
+    threading.Thread(target=server2.serve_forever, daemon=True).start()
+    tdir = tempfile.mkdtemp(prefix="dt-trunc-")
+    try:
+        url = "http://127.0.0.1:{}/DisplayTools.exe".format(server2.server_port)
+        dest = os.path.join(tdir, "DisplayTools.exe.new")
+        raised = None
+        try:
+            update_check.download_asset(
+                {"name": "DisplayTools.exe", "url": url,
+                 "browser_download_url": url, "size": 512 * 1024}, dest)
+        except Exception as exc:                            # noqa: BLE001
+            raised = exc
+        check("截断的下载会被判为失败（不静默接受）",
+              isinstance(raised, update_check.DownloadError), repr(raised))
+        check("失败后不留半截文件", not os.path.exists(dest), str(os.listdir(tdir)))
+        check("也不留 .part 残留",
+              not any(name.endswith(".part") for name in os.listdir(tdir)),
+              str(os.listdir(tdir)))
+
+        # 3) UpdateDownloader 走一遍：同样必须报 error 且不留下文件
+        downloader = update_check.UpdateDownloader(
+            {"name": "DisplayTools.exe", "url": url,
+             "browser_download_url": url, "size": 512 * 1024}, dest)
+        got = []
+        downloader.finished_with.connect(lambda kind, msg: got.append((kind, msg)))
+        downloader.run()                                    # 直接同步跑，不起线程
+        check("下载线程把截断判成 error",
+              got and got[0][0] == "error" and "不完整" in got[0][1], str(got[:1]))
+        check("下载线程不留下坏文件", not os.path.exists(dest))
+    finally:
+        server2.shutdown()
+        shutil.rmtree(tdir, ignore_errors=True)
+
+    # 4) 换文件脚本的大小闸门：对不上就绝不替换
+    gdir = tempfile.mkdtemp(prefix="dt-gate-")
+    try:
+        gate_target = os.path.join(gdir, "DisplayTools.exe")
+        gate_new = os.path.join(gdir, "DisplayTools.exe.new")
+        with open(gate_target, "w", encoding="utf-8") as handle:
+            handle.write("OLD")
+        with open(gate_new, "w", encoding="utf-8") as handle:
+            handle.write("NEW-BUT-WRONG-SIZE")
+        script = update_check.swap_command(gate_new, gate_target, pid=999999,
+                                           expected_size=999999999)
+        check("换文件脚本带上了期望大小", "999999999" in script and "$expected" in script)
+        update_check.start_swap(gate_new, gate_target, pid=999999,
+                                expected_size=999999999)
+        time.sleep(6)
+        check("大小对不上时旧 exe 原封不动",
+              open(gate_target, encoding="utf-8").read() == "OLD",
+              open(gate_target, encoding="utf-8").read())
+        check("大小对不上时不产生 .old",
+              not os.path.exists(gate_target + ".old"))
+        check("大小对不上时新文件也不动", os.path.isfile(gate_new))
+    finally:
+        shutil.rmtree(gdir, ignore_errors=True)
+
+    # 5) 检查更新/下载的结果必须是"留得住"的对话框，不是几秒就没的浮层
+    import command_store
+    shown = []
+    toasts = []
+    real_exec = info_dialog.InfoDialog.exec_
+    info_dialog.InfoDialog.exec_ = lambda self: shown.append(self)
+    original_toast = window.toast
+    window.toast = lambda *args, **kwargs: toasts.append(args[:1])
+    try:
+        # ok 分支：用 UpdateChecker 的替身同步发结果
+        original_checker = update_check.UpdateChecker
+
+        class DirectChecker(original_checker):
+            def __init__(self, parent=None):
+                super(DirectChecker, self).__init__(parent)
+                self.result = {"tag": theme.APP_VERSION}
+
+            def isRunning(self):
+                return False
+
+            def start(self):
+                self.finished_with.emit("ok", "已是最新版本（{}）".format(theme.APP_VERSION))
+
+        update_check.UpdateChecker = DirectChecker
+        try:
+            window.check_updates()
+        finally:
+            update_check.UpdateChecker = original_checker
+        check("检查更新结果为「已是最新」时弹对话框（不是浮层）",
+              len(shown) >= 1, "对话框 %d 个 / 浮层 %s" % (len(shown), toasts))
+        if shown:
+            check("对话框里写了当前版本与结论",
+                  "已是最新" in shown[-1].view.toPlainText()
+                  and theme.APP_VERSION in shown[-1].view.toPlainText(),
+                  shown[-1].view.toPlainText()[:120])
+
+        # error 分支
+        shown[:] = []
+
+        class ErrorChecker(DirectChecker):
+            def start(self):
+                self.finished_with.emit("error", "连不上 GitHub（URLError）")
+
+        update_check.UpdateChecker = ErrorChecker
+        try:
+            window.check_updates()
+        finally:
+            update_check.UpdateChecker = original_checker
+        check("检查更新失败也弹对话框并给出发布页",
+              len(shown) >= 1 and "发布页" in shown[-1].view.toPlainText()
+              or (shown and "github" in shown[-1].view.toPlainText().lower()),
+              shown[-1].view.toPlainText()[:160] if shown else "没弹框")
+    finally:
+        info_dialog.InfoDialog.exec_ = real_exec
+        window.toast = original_toast
+        window._update_checker = None
 
     # 收尾
     window.pages["tools"].stop_background()

@@ -107,7 +107,14 @@ Shell Tools 是「左侧控制区（2 列网格）+ **右侧竖向 Log 面板**�
   锁着，覆盖不了）→ 后台 PowerShell 脚本用 PID 等本进程退出 → 旧 exe 改名成
   `DisplayTools.exe.old` → 新文件就位成 `DisplayTools.exe` → 启动新版本。
   新版启动 3 秒后自己删掉 `.old`（万一新版起不来，把 `.old` 改回
-  `DisplayTools.exe` 就能回退）。脚本用 `-EncodedCommand`（UTF-16LE base64）
+  `DisplayTools.exe` 就能回退）。
+- **下载完整性三道关**（踩过坑：公司代理会把连接掐断，半截 exe 换上去后新版本
+  启动只弹一个 `Error loading Python DLL`，用户完全不知道发生了什么）：
+  ① 下载时比对 `Content-Length` 与实收字节，对不上就报"下载不完整"并删掉半截文件；
+  ② 换文件前校验大小 + `MZ` 头（防下到错误页），不合格就丢弃、当前版本不动；
+  ③ 换文件脚本再核一次期望大小，对不上时照旧启动旧版本。
+- 更新相关的对话框都"留得住"：检查结果（最新 / 失败 / 有新版本）、下载进度
+  （`download_dialog.py`）、更新就绪（8 秒倒计时自动重启）——不再用几秒就消失的浮层。脚本用 `-EncodedCommand`（UTF-16LE base64）
   传递，不写 `.bat`、不留文件，也避开中文路径的编码坑；spawn 用
   `CREATE_NO_WINDOW`，**别用 `DETACHED_PROCESS`**（实测那样起的 powershell
   会立刻 rc=0 退出、一行都不执行）。
@@ -132,7 +139,7 @@ run_checks.bat device     # 再加上真机相关的 4 项（要连板子）
 .venv\Scripts\python.exe devtools\check_layout.py      # 布局健康检查：多种窗口尺寸下检测重叠/压缩/越界
 .venv\Scripts\python.exe devtools\check_panel_width.py # 右侧两个面板的文本框必须都是 240px（固定，不随窗口变）
 .venv\Scripts\python.exe devtools\check_wraplabel.py   # 自动换行标签高度是否够（inspect_ui 的盲区）
-.venv\Scripts\python.exe devtools\selftest.py          # 逻辑自测 211 项（不需要连接设备）
+.venv\Scripts\python.exe devtools\selftest.py          # 逻辑自测 228 项（不需要连接设备）
 .venv\Scripts\python.exe devtools\check_theme.py       # 浅色/深色令牌完整性与残留检查
 .venv\Scripts\python.exe devtools\check_timing.py      # 时序/带宽公式 + 文本解析 + DCS 包构造
 .venv\Scripts\python.exe devtools\check_multidevice.py # 多设备 -s 注入（保证不会出现两个 -s）

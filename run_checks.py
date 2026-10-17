@@ -15,6 +15,16 @@ import os
 import subprocess
 import sys
 
+# 输出编码兜底：Windows 上把 stdout/stderr 重定向到管道时，Python 默认按
+# 系统代码页（cp1252 / GBK）编码，一打印中文就 UnicodeEncodeError 直接崩。
+# GitHub Actions 第一次跑就是这么挂的（0 秒退出）。这里强制 UTF-8，
+# 真遇到编不出来的字符用 ? 代替，绝不让自查脚本自己先崩掉。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:                                      # noqa: BLE001
+        pass
+
 ROOT = os.path.dirname(os.path.abspath(__file__))
 # 优先用仓库自带的 .venv；没有（新克隆 / CI 里直接 pip install 到系统解释器）
 # 就退回当前解释器——以前只认 .venv，新克隆一跑就 FileNotFoundError。

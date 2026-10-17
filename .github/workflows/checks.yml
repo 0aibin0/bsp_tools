@@ -15,6 +15,11 @@ jobs:
     # 必须是 windows：界面/布局检查跑 Qt，smoke_start 还要真实桌面会话。
     # Linux runner 上没有 DPI/Qt 平台插件，这 11 项跑不全。
     runs-on: windows-latest
+    env:
+      # 中文输出：Windows runner 上不设这个，打印中文会 UnicodeEncodeError。
+      # run_checks.py 自己也做了 reconfigure 兜底，这里是双保险。
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: utf-8
     steps:
       - uses: actions/checkout@v4
 

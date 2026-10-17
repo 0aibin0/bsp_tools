@@ -54,3 +54,7 @@ _commitmsg.txt
 *.iml
 Thumbs.db
 desktop.ini
+# Excel / Word 打开文件时留下的锁文件（~$xxx.xlsx）
+~$*
+# 助手工具的本地配置（含本机绝对路径，不入库）
+.claude/

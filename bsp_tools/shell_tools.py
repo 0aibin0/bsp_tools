@@ -1,4 +1,5 @@
 import os
+import glob
 import re
 import sys
 import subprocess
@@ -17,9 +18,40 @@ from command_runner import kill_process_tree
 from ui_shell_tools import Ui_ShellTools
 from base_tool_page import BaseToolPage
 
+# scrcpy / APK 的**已知位置**（仅作探测线索，不再是写死的默认值）。
+# 以前直接当默认值用，换一台机器就指向不存在的路径；现在先看配置，
+# 再按这些线索和常见目录扫一遍，都没有就留空（用的时候会提示选文件）。
 DEFAULT_SCRCPY = r"D:\01_tools\scrcpy-win64-v2.6.1\scrcpy.exe"
 DEFAULT_APK = r"D:\00_project\lcm_test_apk\Display-Tester_1.apk"
 CMD_TIMEOUT = 30
+
+
+def _first_existing(paths):
+    for path in paths:
+        if path and os.path.isfile(path):
+            return path
+    return ""
+
+
+def detect_scrcpy():
+    """找 scrcpy.exe：已知位置 → 常见目录 → 空串。"""
+    candidates = [DEFAULT_SCRCPY]
+    for folder in (r"D:\01_tools", r"C:\tools", r"C:\Program Files",
+                   os.path.expanduser("~\\Desktop")):
+        if os.path.isdir(folder):
+            candidates.extend(
+                glob.glob(os.path.join(folder, "scrcpy*", "scrcpy.exe")))
+    return _first_existing(candidates)
+
+
+def detect_apk():
+    """找测试 APK：已知位置 → 常见目录 → 空串。"""
+    candidates = [DEFAULT_APK]
+    for folder in (r"D:\00_project\lcm_test_apk", r"D:\01_tools",
+                   os.path.expanduser("~\\Desktop")):
+        if os.path.isdir(folder):
+            candidates.extend(glob.glob(os.path.join(folder, "*.apk")))
+    return _first_existing(candidates)
 
 # 右侧 Log 面板的固定默认宽度（分隔条分配值）。
 # 分组框左右各 23px 内边距，286 - 46 = 240px —— 里面文本框实测就是 240，
@@ -449,8 +481,9 @@ class ShellToolsPage(BaseToolPage, Ui_ShellTools):
             self.ylogpath.setText(config.get('base_path', ''))
             self.ylogpath_2.setText(config.get('project', ''))
             self.ylogpath_3.setText(config.get('sub_name', ''))
-            self.apk1_path.setText(config.get('apk_path', DEFAULT_APK))
-            self.scrcpy_path.setText(config.get('scrcpy_path', DEFAULT_SCRCPY))
+            self.apk1_path.setText(config.get('apk_path', '') or detect_apk())
+            self.scrcpy_path.setText(
+                config.get('scrcpy_path', '') or detect_scrcpy())
             self.flash_partition.setCurrentText(config.get('flash_partition', ''))
             self.flash_img_path.setText(config.get('flash_img', ''))
             self.debug_density_val.setText(config.get('density_val', ''))

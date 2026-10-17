@@ -25,6 +25,8 @@ from mainwindow import MainWindow                  # noqa: E402
 from tools_log import LogAnalyzerSection, LEVEL_PATTERNS  # noqa: E402
 from tools_device import DeviceInfoSection         # noqa: E402
 from tools_files import FileManagerSection         # noqa: E402
+import tools_display as display_mod                # noqa: E402
+import brightness_map as bmap                      # noqa: E402
 from tools_perf import PerfSection                 # noqa: E402
 
 FAILURES = []
@@ -349,12 +351,14 @@ def main():
 
     # 拦掉真实执行：只记录命令，避免自测真的去调 adb
     calls = []
+    quiet_flags = []
     original_run = runner.run
 
     from command_runner import device_cmd
 
     def fake_run(command, label=None, **kwargs):
         calls.append((device_cmd(command), label))
+        quiet_flags.append(bool(kwargs.get("quiet")))
         return None
 
     runner.run = fake_run
@@ -366,11 +370,67 @@ def main():
         display = tools_page_obj.sections["display"]
         display.bright_value.setText("180")
         display.set_brightness()
-        check("背光设置命令正确",
-              calls and "screen_brightness 180" in calls[-1][0], str(calls[-1:]))
+        # 输入框是**节点量程**（0..1023），走框架要折算成 0..255：
+        # 180 / 1023 * 255 ≈ 44.87 → 45
+        check("背光设置把节点值折算成框架值",
+              calls and "screen_brightness 45" in calls[-1][0], str(calls[-1:]))
         check("执行后背光仍停在常用工具页",
               window.nav.current_key() == "tools",
               str(window.nav.current_key()))
+
+        # --- 亮度量程：滑块走节点量程，框架值按比例折算 ---
+        check("亮度滑块按节点量程（默认 1023）",
+              display.bright_slider.maximum() == display.node_max == 1023,
+              "{} / {}".format(display.bright_slider.maximum(), display.node_max))
+        check("节点 818 → 框架 204", display._to_framework(818) == 204,
+              str(display._to_framework(818)))
+        check("框架 204 → 节点 818", display._to_node(204) == 818,
+              str(display._to_node(204)))
+        check("节点 818 ≈ 79.96%", abs(display._percent(818) - 79.96) < 0.05,
+              str(display._percent(818)))
+        display.bright_slider.setValue(818)
+        check("量程提示显示 节点/百分比/框架",
+              "818/1023" in display.bright_hint.text()
+              and "80%" in display.bright_hint.text()
+              and "204" in display.bright_hint.text(),
+              display.bright_hint.text())
+
+        check("_last_int 取最后一行纯整数",
+              display._last_int("cat: x: No such file or directory\n1023\n") == 1023,
+              str(display._last_int("cat: x: No such file or directory\n1023\n")))
+        check("_last_int 全是错误行时返回 None",
+              display._last_int("cat: x: No such file or directory\n") is None)
+
+        display._on_node_max(0, "cat: x: No such file or directory\n4095\n")
+        check("读到 max_brightness 后滑块上限跟着变",
+              display.bright_slider.maximum() == 4095,
+              str(display.bright_slider.maximum()))
+        check("改量程后提示同步", "4095" in display.bright_hint.text(),
+              display.bright_hint.text())
+        display.node_max = 1023
+        display._apply_node_max()
+
+        # --- DCS 包构造：负载 = 命令 + 参数，长度字节上限 255 ---
+        display.dcs_cmd.setText("0x1a")
+        display.dcs_params.setText(" ".join("0x01" for _ in range(254)))
+        seq = display.build_dcs()
+        check("254 个参数能生成（负载正好 255 字节）",
+              seq is not None and len(seq) == 259, str(seq and len(seq)))
+        check("长度字节是 0xff", seq is not None and seq[3] == 0xFF,
+              str(seq and seq[3]))
+        display.dcs_params.setText(" ".join("0x01" for _ in range(255)))
+        check("255 个参数被拒（长度字节会溢出）", display.build_dcs() is None,
+              display.dcs_kind_label.text())
+
+        # --- 进页面自动读设备状态 ---
+        before = len(calls)
+        display.on_page_shown()
+        auto = [command for command, _label in calls[before:]]
+        check("进页面自动读三条（max / brightness / wm size）",
+              len(auto) == 3 and "max_brightness" in auto[0]
+              and "wm size" in auto[-1], str(auto))
+        check("自动读走 quiet（不刷面板、不弹 toast）",
+              quiet_flags[-3:] == [True, True, True], str(quiet_flags[-3:]))
 
         # DCS 直接读写节点已按 func-list 移除，这里确认它真的不再产生命令
         check("DCS 写节点按钮已下线",
@@ -426,6 +486,169 @@ def main():
               (display.t_w.value(), display.t_h.value()) == (1080, 2400),
               "{}x{}".format(display.t_w.value(), display.t_h.value()))
         check("复位后恢复自动分频", display.t_dpi_auto.isChecked())
+
+        # --- 屏幕 DPI：按对角线 / 按物理宽高两种填法 ---
+        dpi_info = display_mod.screen_dpi(1080, 2400, diagonal_in=6.40)
+        check("屏幕 DPI：1080x2400 / 6.40in ≈ 411.2",
+              dpi_info is not None and abs(dpi_info["dpi"] - 411.2) < 0.3,
+              str(dpi_info and round(dpi_info["dpi"], 2)))
+        check("屏幕 DPI：点距 ≈ 0.0618 mm",
+              dpi_info is not None and
+              abs(dpi_info["dot_pitch_mm"] - 0.0618) < 0.001,
+              str(dpi_info and round(dpi_info["dot_pitch_mm"], 5)))
+        check("屏幕 DPI：由对角线反推物理宽高 ≈ 66.7 / 148.2 mm",
+              dpi_info is not None and
+              abs(dpi_info["phys_w_mm"] - 66.7) < 0.5 and
+              abs(dpi_info["phys_h_mm"] - 148.2) < 0.5,
+              str(dpi_info and (round(dpi_info["phys_w_mm"], 1),
+                                round(dpi_info["phys_h_mm"], 1))))
+        check("屏幕 DPI：宽高比 9:20",
+              dpi_info is not None and dpi_info["aspect"] == "9:20",
+              str(dpi_info and dpi_info["aspect"]))
+
+        mm_info = display_mod.screen_dpi(1080, 2400, phys_w_mm=68.0,
+                                        phys_h_mm=151.0)
+        check("屏幕 DPI：68x151mm ≈ 403.7 dpi",
+              mm_info is not None and abs(mm_info["dpi"] - 403.7) < 0.5,
+              str(mm_info and round(mm_info["dpi"], 2)))
+        check("屏幕 DPI：宽高换算出的对角线 ≈ 6.52 in",
+              mm_info is not None and
+              abs(mm_info["diagonal_in"] - 6.52) < 0.02,
+              str(mm_info and round(mm_info["diagonal_in"], 3)))
+        one_side = display_mod.screen_dpi(1080, 2400, phys_w_mm=68.0)
+        check("屏幕 DPI：只给宽也能按比例补高",
+              one_side is not None and
+              abs(one_side["phys_h_mm"] - 151.1) < 0.5,
+              str(one_side and round(one_side["phys_h_mm"], 1)))
+        check("屏幕 DPI：缺物理尺寸返回 None",
+              display_mod.screen_dpi(1080, 2400) is None)
+        check("屏幕 DPI：像素尺寸为 0 返回 None",
+              display_mod.screen_dpi(0, 2400, diagonal_in=6.4) is None)
+
+        display.dpi_mode.setCurrentIndex(0)         # 按对角线
+        display.dpi_diag.setValue(6.40)
+        app.processEvents()
+        check("界面：屏幕 DPI 显示 411.2 dpi",
+              "411.2 dpi" in display.dpi_calc_label.text(),
+              display.dpi_calc_label.text())
+        check("界面：对角线模式下宽高输入被藏起来",
+              display.dpi_phys_w.isHidden() and not display.dpi_diag.isHidden())
+        display.dpi_mode.setCurrentIndex(1)         # 按宽×高
+        app.processEvents()
+        check("界面：宽高模式换成 mm 输入",
+              not display.dpi_phys_w.isHidden() and display.dpi_diag.isHidden())
+        check("界面：宽高模式下 DPI ≈ 403.7",
+              "403.7 dpi" in display.dpi_calc_label.text(),
+              display.dpi_calc_label.text())
+
+        # --- 屏幕 DPI 反算：已知分辨率 + 目标 PPI → 需要多大屏 ---
+        rev = display_mod.screen_size_for_ppi(1080, 2400, 400)
+        check("反算：1080x2400 @400ppi → 对角线 ≈ 6.58 in",
+              rev is not None and abs(rev["diagonal_in"] - 6.5795) < 0.01,
+              str(rev and round(rev["diagonal_in"], 3)))
+        check("反算：物理宽高 ≈ 68.6 / 152.4 mm",
+              rev is not None and abs(rev["phys_w_mm"] - 68.6) < 0.5
+              and abs(rev["phys_h_mm"] - 152.4) < 0.5,
+              str(rev and (round(rev["phys_w_mm"], 1),
+                           round(rev["phys_h_mm"], 1))))
+        check("反算：目标 PPI 为 0 返回 None",
+              display_mod.screen_size_for_ppi(1080, 2400, 0) is None)
+
+        display.dpi_mode.setCurrentIndex(2)         # 目标 PPI
+        display.dpi_target.setValue(400.0)
+        app.processEvents()
+        check("界面：反算模式显示所需对角线",
+              "需对角线 6.58 in" in display.dpi_calc_label.text(),
+              display.dpi_calc_label.text())
+        check("界面：反算模式只显示目标 PPI 输入",
+              not display.dpi_target.isHidden()
+              and display.dpi_diag.isHidden()
+              and display.dpi_phys_w.isHidden(),
+              "target={} diag={} phys={}".format(
+                  not display.dpi_target.isHidden(),
+                  display.dpi_diag.isHidden(),
+                  display.dpi_phys_w.isHidden()))
+
+        # --- 亮度表：解析 / 单调性校验 / XML 生成 ---
+        pts, probs = bmap.parse_points(
+            "0.0 1.0\n0.5 120   # 中间点\n0.8 800\n1.0 1200 HBM\n")
+        check("亮度表：解析出 4 个点且无语法问题",
+              len(pts) == 4 and probs == [], str(probs))
+        check("亮度表：HBM 只落在最后一个点",
+              [p["hbm"] for p in pts] == [False, False, False, True],
+              str([p["hbm"] for p in pts]))
+        check("亮度表：合法表校验通过", bmap.validate_points(pts) == [],
+              str(bmap.validate_points(pts)))
+        check("亮度表：transitionPoint = 最后一个非 HBM 点",
+              abs(bmap.transition_point(pts) - 0.8) < 1e-9,
+              str(bmap.transition_point(pts)))
+
+        bad_value = [{"value": 0.0, "nits": 1.0, "hbm": False, "line": 1},
+                     {"value": 0.5, "nits": 120.0, "hbm": False, "line": 2},
+                     {"value": 0.4, "nits": 200.0, "hbm": False, "line": 3}]
+        check("亮度表：value 递减被抓出来",
+              "value 必须非递减" in " ".join(bmap.validate_points(bad_value)),
+              " ".join(bmap.validate_points(bad_value)))
+
+        bad_nits = [{"value": 0.0, "nits": 100.0, "hbm": False, "line": 1},
+                    {"value": 0.1, "nits": 50.0, "hbm": False, "line": 2}]
+        check("亮度表：nits 递减被抓出来",
+              "nits 必须非递减" in " ".join(bmap.validate_points(bad_nits)))
+
+        out_of_range = [{"value": -0.1, "nits": 1.0, "hbm": False, "line": 1},
+                        {"value": 1.2, "nits": 2.0, "hbm": False, "line": 2}]
+        check("亮度表：value 超出 0..1 被抓出来",
+              "超出 0..1" in " ".join(bmap.validate_points(out_of_range)))
+
+        hbm_mid = [{"value": 0.0, "nits": 1.0, "hbm": False, "line": 1},
+                   {"value": 0.5, "nits": 50.0, "hbm": True, "line": 2},
+                   {"value": 0.8, "nits": 800.0, "hbm": False, "line": 3}]
+        check("亮度表：HBM 不连续被抓出来",
+              "HBM 点必须连续" in " ".join(bmap.validate_points(hbm_mid)))
+
+        all_hbm = [{"value": 0.0, "nits": 1.0, "hbm": True, "line": 1},
+                   {"value": 1.0, "nits": 2.0, "hbm": True, "line": 2}]
+        check("亮度表：全是 HBM 算不出 transitionPoint",
+              bmap.transition_point(all_hbm) is None
+              and "算不出 transitionPoint"
+              in " ".join(bmap.validate_points(all_hbm)),
+              str(bmap.transition_point(all_hbm)))
+
+        xml = bmap.to_xml(pts)
+        check("亮度表：XML 有 4 个 point 且标签闭合",
+              xml.count("<point>") == 4
+              and xml.startswith("<screenBrightnessMap>")
+              and xml.rstrip().endswith("</screenBrightnessMap>"),
+              xml.split("\n")[0])
+        check("亮度表：value 保留 6 位小数",
+              "<value>0.500000</value>" in xml, xml[:80])
+        check("亮度表：summary 带 transitionPoint",
+              "transitionPoint" in bmap.summary(pts), bmap.summary(pts))
+        check("亮度表：DBV 与 value 互转（818 ↔ 0.8）",
+              bmap.value_to_dbv(0.8) == 818
+              and bmap.value_to_dbv(bmap.dbv_to_value(818)) == 818,
+              str(bmap.value_to_dbv(0.8)))
+
+        from brightness_map_dialog import BrightnessMapDialog
+        dialog = BrightnessMapDialog(window)
+        ok, _pts, _probs = dialog.on_check()
+        check("亮度表对话框：默认样例校验通过", ok is True, dialog.status.text())
+        built = dialog.on_build()
+        check("亮度表对话框：能生成 XML",
+              built is not None and "<screenBrightnessMap>" in built,
+              str(built and built[:40]))
+        check("亮度表对话框：提示 transitionPoint 写在外层",
+              "transitionPoint" in dialog.output_edit.toPlainText(),
+              dialog.output_edit.toPlainText()[-90:])
+        dialog.input_edit.setPlainText("0.5 100\n0.2 50\n")
+        ok2, _p, probs2 = dialog.on_check()
+        check("亮度表对话框：递减表被拒绝", ok2 is False and bool(probs2),
+              dialog.status.text())
+        dialog.close()
+
+        display.dpi_mode.setCurrentIndex(0)
+        display.reset_timing()
+        app.processEvents()
 
         # 走完整剪贴板路径：用户实际粘的是设备树（DTS）片段
         from PyQt5.QtWidgets import QApplication as _QApp
@@ -648,8 +871,8 @@ def main():
         before = len(collected)
         display.get_brightness()
         backlight_cmds = [c for c, _l in collected[before:]]
-        check("读取背光发了两条（settings + 节点）", len(backlight_cmds) == 2,
-              str(backlight_cmds))
+        check("读取背光发了三条（settings + brightness + max）",
+              len(backlight_cmds) == 3, str(backlight_cmds))
         check("第一条读 settings 亮度",
               backlight_cmds and
               "settings get system screen_brightness" in backlight_cmds[0],

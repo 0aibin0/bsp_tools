@@ -50,11 +50,13 @@ STYLE_BYTE = "byte"
 STYLE_WRITE = "write"
 STYLE_RXX = "rxx"
 STYLE_GEN_WR = "gen_wr"
+STYLE_QCOM = "qcom"
 STYLE_LABELS = (
     (STYLE_BYTE, "字节序列 0x39,…"),
     (STYLE_WRITE, "Write(Command)"),
     (STYLE_RXX, "Rxx"),
     (STYLE_GEN_WR, "GEN_WR"),
+    (STYLE_QCOM, "QCOM 数组"),
 )
 
 _HEX_DIGITS = "0123456789abcdefABCDEF"
@@ -436,11 +438,88 @@ def format_as(entries, style=STYLE_BYTE):
         elif style == STYLE_GEN_WR:
             blocks.append("GEN_WR({});".format(
                 ",".join("0x{:02x}".format(int(value) & 0xff) for value in payload)))
+        elif style == STYLE_QCOM:
+            return format_qcom_array(entries)   # 整条数组一起算（只有最后一包 last=1）
         else:
             blocks.append(to_dcs(entry))
     if style == STYLE_WRITE:
         return "\n\n".join(blocks)          # 每条之间空一行，看着清爽也便于回填正向
     return "\n".join(blocks)
+
+
+# =====================================================================
+# QCOM DSI 命令数组（qcom,mdss-dsi-on-command / -off-command）
+#
+# 每个包的字节布局（7 字节包头 + 负载）：
+#   [0] dtype        —— DCS 数据类型，即 initcode 的块类型（0x05/0x15/0x39/0x29…）
+#   [1] last         —— 是否命令集里的最后一包（1 = 是）
+#   [2] vc           —— 虚拟通道，一般 0
+#   [3] ack          —— 一般 0
+#   [4] post_wait_ms —— 包后等待毫秒，一般 0
+#   [5..6] tx_len    —— 负载长度，**大端**（高字节在前）
+#   [7..]  payload   —— 负载（命令 + 参数）
+#
+# 踩过的坑：包长必须正好 = 7 + tx_len。多余字节在数组**末尾**会被静默丢弃
+# （不报错），在**中间**会让后续包全部错位 → dsi_panel_get_cmd_pkt_count()
+# 返回 -22 → 整条命令集一条都不下发。
+# =====================================================================
+
+QCOM_HEADER = 7
+
+
+def qcom_packet(entry, last=0):
+    """一条 initcode 条目 → 一个 QCOM 包（字节列表）。"""
+    payload = [entry[1]] + list(entry[2])
+    header = getattr(entry, "header", 0) or 0x39
+    length = len(payload)
+    return [header & 0xff, 1 if last else 0, 0x00, 0x00, 0x00,
+            (length >> 8) & 0xff, length & 0xff] + [v & 0xff for v in payload]
+
+
+def format_qcom_array(entries):
+    """把若干条目拼成 QCOM DTS 数组（一包一行、逗号分隔、行尾带逗号）。"""
+    entries = list(entries)
+    lines = []
+    for index, entry in enumerate(entries):
+        packet = qcom_packet(entry, last=(index == len(entries) - 1))
+        lines.append(",".join("0x{:02x}".format(v) for v in packet) + ",")
+    return "\n".join(lines)
+
+
+def parse_qcom_text(text):
+    """把粘进来的 QCOM 数组文本扫成字节列表（认注释、逗号、空格、裸十六进制）。"""
+    values = []
+    for _lineno, code, _raw in _strip_comments(text):
+        values.extend(value & 0xff for value in _scan_line(code))
+    return values
+
+
+def validate_qcom_array(values):
+    """逐包校验 QCOM 数组，返回 (包数, 问题列表)。
+
+    空问题列表 = 每包都满足「总长 = 7 + tx_len」。
+    """
+    problems = []
+    index = 0
+    total = len(values)
+    packets = 0
+    while index < total:
+        remain = total - index
+        if remain < QCOM_HEADER:
+            problems.append(
+                "第 {} 包只剩 {} 字节，凑不满 {} 字节包头".format(
+                    packets + 1, remain, QCOM_HEADER))
+            break
+        length = (values[index + 5] << 8) | values[index + 6]
+        need = QCOM_HEADER + length
+        packets += 1
+        if need > remain:
+            problems.append(
+                "第 {} 包声明 tx_len={}（整包应为 {} 字节），实际只剩 {} 字节，"
+                "差 {} 字节".format(packets, length, need, remain, need - remain))
+            break
+        index += need
+    return packets, problems
 
 
 def describe_entry(index, entry):
@@ -517,6 +596,7 @@ class InitcodeBuilderPage(BaseToolPage, Ui_InitcodeBuilder):
         self._set_reverse_status("等待输入：粘贴 initcode 后点「解析」", "muted")
 
         self.pushButton_parse.clicked.connect(self.on_reverse_parse)
+        self.pushButton_qcom_check.clicked.connect(self.on_validate_qcom)
         self.pushButton_reverse_copy.clicked.connect(self.on_reverse_copy)
         self.pushButton_output_copy.clicked.connect(self.on_output_copy)
         self.combo_reverse_style.currentIndexChanged.connect(self.on_reverse_style_changed)
@@ -570,6 +650,30 @@ class InitcodeBuilderPage(BaseToolPage, Ui_InitcodeBuilder):
     def on_output_copy(self):
         """复制按当前格式生成的 initcode。"""
         self.copy_to_clipboard(self.reverse_output)
+
+    def on_validate_qcom(self):
+        """把输入当作 QCOM DSI 命令数组逐包校验（包长必须 = 7 + tx_len）。"""
+        values = parse_qcom_text(self.reverse_input.toPlainText())
+        if not values:
+            self.reverse_list.setPlainText("没有读到字节：先粘贴 QCOM 数组")
+            self._set_reverse_status("没有读到字节", "muted")
+            return (0, [])
+
+        packets, problems = validate_qcom_array(values)
+        if problems:
+            self.reverse_list.setPlainText(
+                "共 {} 字节，识别 {} 包，发现 {} 处问题：\n{}".format(
+                    len(values), packets, len(problems), "\n".join(problems)))
+            self._set_reverse_status(
+                "QCOM 数组有 {} 处问题：{}".format(len(problems), problems[0]),
+                "warn")
+        else:
+            self.reverse_list.setPlainText(
+                "共 {} 字节，{} 包，逐包对齐（每包 = 7 + tx_len），没有发现问题。"
+                .format(len(values), packets))
+            self._set_reverse_status(
+                "QCOM 数组对齐正常（{} 包）".format(packets), "ok")
+        return packets, problems
 
     def _render_reverse_output(self):
         style = self.combo_reverse_style.currentData() or STYLE_BYTE

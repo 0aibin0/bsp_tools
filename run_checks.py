@@ -16,7 +16,11 @@ import subprocess
 import sys
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
+# 优先用仓库自带的 .venv；没有（新克隆 / CI 里直接 pip install 到系统解释器）
+# 就退回当前解释器——以前只认 .venv，新克隆一跑就 FileNotFoundError。
 PYTHON = os.path.join(ROOT, ".venv", "Scripts", "python.exe")
+if not os.path.isfile(PYTHON):
+    PYTHON = sys.executable
 
 # (显示名, 命令参数, 是否需要连设备)
 CHECKS = [

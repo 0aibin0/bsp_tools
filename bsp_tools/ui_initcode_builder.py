@@ -149,6 +149,13 @@ class Ui_InitcodeBuilder(object):
         self.combo_reverse_style.setMinimumWidth(168)
         # 下拉项由 initcode_builder 按 STYLE_LABELS 填充（保持单一来源）
         control_row.addWidget(self.combo_reverse_style)
+        self.pushButton_qcom_check = ui_widgets.soft_button(
+            "校验 QCOM", parent=self.reverse_card)
+        self.pushButton_qcom_check.setObjectName("pushButton_qcom_check")
+        self.pushButton_qcom_check.setToolTip(
+            "把上面的输入当作 qcom,mdss-dsi-on-command 数组，逐包检查"
+            "「包长 = 7 + tx_len」是否对齐（错位的后果是 rc=-22、命令一条都不下发）")
+        control_row.addWidget(self.pushButton_qcom_check)
         self.pushButton_reverse_copy = ui_widgets.soft_button("复制结果", parent=self.reverse_card)
         self.pushButton_reverse_copy.setObjectName("pushButton_reverse_copy")
         control_row.addWidget(self.pushButton_reverse_copy)

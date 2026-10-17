@@ -174,8 +174,9 @@ def main():
               regenerated == "\n".join(EXPECTED_LINES), regenerated)
     check("未知风格退回字节序列",
           format_as(entries, "没这个风格") == "\n".join(EXPECTED_LINES))
-    check("STYLE_LABELS 覆盖四种风格",
-          [key for key, _label in icb.STYLE_LABELS] == ["byte", "write", "rxx", "gen_wr"],
+    check("STYLE_LABELS 覆盖五种风格",
+          [key for key, _label in icb.STYLE_LABELS] ==
+          ["byte", "write", "rxx", "gen_wr", "qcom"],
           str(icb.STYLE_LABELS))
     check("界面下拉框与 STYLE_LABELS 顺序一致",
           [page.combo_reverse_style.itemData(i)
@@ -434,6 +435,49 @@ def main():
                         (3, "Rxx"), (4, "GEN_WR")):
         generated = run_forward(page, index, "完全是垃圾\n0x77 0x88\n随手说明\n")
         check("{}：全部不匹配时输出为空".format(name), generated == "", generated)
+
+    print("\n[15] QCOM 数组：7 字节头 + tx_len，逐包校验")
+    qcom_entries = list(parse_initcode("\n".join(EXPECTED_LINES)))
+    qcom_text = icb.format_qcom_array(qcom_entries)
+    qcom_lines = qcom_text.split("\n")
+    check("一条 initcode 一个包", len(qcom_lines) == 3, qcom_text)
+    first = qcom_lines[0].rstrip(",").split(",")
+    check("首包 = 7 字节头 + 5 字节负载", len(first) == 12, str(first))
+    check("首包 dtype 沿用块类型 0x39", int(first[0], 16) == 0x39, first[0])
+    check("tx_len 是大端（高字节在前）",
+          int(first[5], 16) == 0x00 and int(first[6], 16) == 0x05,
+          "{} {}".format(first[5], first[6]))
+    last = qcom_lines[-1].rstrip(",").split(",")
+    check("只有最后一包 last=1",
+          int(first[1], 16) == 0 and int(last[1], 16) == 1,
+          "first={} last={}".format(first[1], last[1]))
+    check("第二包 tx_len=1（短包写）",
+          int(qcom_lines[1].rstrip(",").split(",")[6], 16) == 0x01,
+          qcom_lines[1])
+
+    packets, problems = icb.validate_qcom_array(icb.parse_qcom_text(qcom_text))
+    check("自产数组逐包对齐", packets == 3 and problems == [],
+          "{} 包 / {}".format(packets, problems))
+
+    truncated = icb.parse_qcom_text(qcom_text)[:-2]
+    _p, problems = icb.validate_qcom_array(truncated)
+    check("末尾少 2 字节：指出差 2 字节",
+          bool(problems) and "差 2 字节" in problems[0], str(problems))
+
+    _p, problems = icb.validate_qcom_array(
+        [0x39, 0, 0, 0, 0, 0, 1, 0xAA] + [0x39, 0, 0, 0, 0, 0, 4, 0xBB])
+    check("中间那包长度不对：报到第 2 包",
+          bool(problems) and "第 2 包" in problems[0], str(problems))
+
+    page.reverse_input.setPlainText(qcom_text)
+    page.pushButton_qcom_check.click()
+    check("界面：校验通过时报出包数",
+          "3 包" in page.reverse_status.text(), page.reverse_status.text())
+    page.reverse_input.setPlainText(qcom_text + "0x00,0x00,0x00,")
+    page.pushButton_qcom_check.click()
+    check("界面：末尾多 3 字节时报第 4 包不完整",
+          "第 4 包" in page.reverse_list.toPlainText(),
+          page.reverse_list.toPlainText())
 
     page.close()
     app.processEvents()

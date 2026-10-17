@@ -1,0 +1,6 @@
+# DisplayTools 运行时依赖
+#
+#   .venv\Scripts\python.exe -m pip install -r requirements.txt
+#
+# 只有 PyQt5。打包见 requirements-dev.txt。
+PyQt5==5.15.10

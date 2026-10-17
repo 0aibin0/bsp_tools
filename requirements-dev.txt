@@ -1,0 +1,12 @@
+# DisplayTools 开发/打包依赖
+#
+#   .venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+#
+# pyinstaller     —— 打 exe（DisplayTools.spec / DisplayTools_onedir.spec）
+# pyqt5-tools     —— 只在重新生成 ui_*.py（Qt Designer / pyuic5）时用
+# Pillow          —— 只在重新生成 icon_img/main.ico 时用：
+#                    python -c "from PIL import Image; Image.open('bsp_tools/icon_img/main.png').save('bsp_tools/icon_img/main.ico', sizes=[(16,16),(24,24),(32,32),(48,48),(64,64),(128,128)])"
+-r requirements.txt
+pyinstaller==6.11.1
+pyqt5-tools==5.15.9.3.3
+Pillow>=10.0

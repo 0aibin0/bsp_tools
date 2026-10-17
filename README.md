@@ -2,7 +2,7 @@
 
 > BSP / LCM 屏体调试工具集 —— PyQt5 单窗口桌面应用，把屏体调试要用的命令、计算和取证固化成一键操作。
 
-[![version](https://img.shields.io/badge/version-v3.2.19-2f6bff)](#版本与发版)
+[![version](https://img.shields.io/badge/version-v3.2.20-2f6bff)](#版本与发版)
 [![python](https://img.shields.io/badge/python-3.11-3776ab)](https://www.python.org/)
 [![pyqt5](https://img.shields.io/badge/PyQt5-5.15.10-41cd52)](https://pypi.org/project/PyQt5/)
 [![platform](https://img.shields.io/badge/platform-Windows%2010%2F11-0078d4)](#环境要求)
@@ -32,7 +32,7 @@
 | --- | --- | --- |
 | 常用 | **常用工具** | 9 个模块，LCM 调试主力页面（见下） |
 | 调试工具 | **Shell Tools** | adb / fastboot 设备控制：烧录、Download Mode、func 键、ylog、APK、投屏 |
-| 转换工具 | **Initcode Builder** | 寄存器读写描述 / `mipi.write` 命令 ↔ initcode 字节序列（正反向） |
+| 转换工具 | **Initcode Builder** | 寄存器读写描述 / `mipi.write` 命令 ↔ initcode 字节序列（正反向），可输出 **QCOM 数组**并逐包校验 |
 | 转换工具 | **LK → Kernel** | LK 十六进制序列 → 内核格式 |
 | 转换工具 | **Kernel → LK** | 内核十六进制序列 → LK 格式 |
 | 转换工具 | **LK → BAT** | 生成 DCS 写入批处理脚本 |
@@ -47,7 +47,7 @@
 | --- | --- |
 | **日志分析** | logcat / dmesg 流式抓取（含 `dmesg -w` 实时）、关键字与正则过滤、只看错误、命中高亮、导出 |
 | **设备信息** | 型号 / 系统 / 屏幕 / 温度 / 电量看板，一键导出 Markdown 报告 |
-| **显示调试** | 背光（settings 或直写 sysfs，节点按 `panel0-backlight` → `sprd_backlight` 顺序试）、分辨率、刷新率、**DCS 包构造**、**时序 / 带宽计算** |
+| **显示调试** | 背光（settings 或直写 sysfs，节点量程按 `max_brightness` 自动对齐）、分辨率、刷新率、**DCS 包构造**、**时序 / 带宽计算**、**屏幕 DPI（正算 / 反算）**、**亮度表生成与校验** |
 | **现场包** | 一键抓 18 项现场证据打包 zip，可对每台在线设备各抓一份 |
 | **触摸调试** | 点击 / 滑动 / 按键注入、触摸可视化开关、`getevent` 抓取 |
 | **系统调试** | 属性读写、CPU 调频、内存/进程/挂载、SELinux、重启 |
@@ -55,12 +55,15 @@
 | **文件管理** | 设备目录浏览、上传下载删除、路径书签 |
 | **命令收藏** | 常用命令增删改查、分组搜索、双击执行（与 `Ctrl+K` 共用一份数据） |
 
-> **显示调试里的两个核心计算**
+> **显示调试里的几个核心能力**
 > - **DCS 包构造**：给命令 + 参数，自动判定短包 `0x05` / 带参短包 `0x15` / 长包 `0x39` 并生成字节序列
 > - **时序 / 带宽计算**：从前后沿算 h_total / v_total / 需求 pclk、T820 DPI 整数分频后的**实际帧率**、
 >   每 lane 需求速率（含 0.9 效率）、消隐占比，并对照 D-PHY 各版本单 lane 上限判定是否可行。
 >   参数支持从剪贴板粘 spec/dmesg 片段自动解析，或跑 `dumpsys display` 从设备读。
 >   算例见 [t820-lcm-porch.xlsx](t820-lcm-porch.xlsx) 与 [t820-lcm-porch 说明](docs/t820-lcm-porch-说明.md)。
+> - **屏幕 DPI**：给分辨率 + 对角线（或物理宽高）算 PPI 与点距；反过来也能由目标 PPI 反推需要多大的屏。
+> - **亮度表**：生成 / 校验 `screenBrightnessMap`，强制 value 与 nits 非递减、HBM 并入顶层表，
+>   并算出 `transitionPoint`——写错会让整表被丢弃、`system_server` 崩溃重启。
 
 ### 全局能力
 
@@ -160,11 +163,15 @@ bsp_tools/                      # 仓库根目录
 │  ├─ initcode_builder.py       #   Initcode 正反向转换
 │  ├─ lk_to_kernel.py / kernel_to_lk.py / lk_to_bat.py   # LK 系列转换
 │  ├─ timing.py                 #   时序 / 带宽计算与 DCS 包构造（纯函数）
+│  ├─ brightness_map.py         #   亮度表解析 / 校验 / XML 生成（纯函数）
+│  ├─ brightness_map_dialog.py  #   亮度表对话框
 │  ├─ ui_*.py / ui_*.ui         #   Qt Designer 生成的界面代码与源文件
 │  ├─ icon_img/                 #   图标资源
 │  └─ dist/DisplayTools.exe     #   打包产物（仓库只保留最新一个，供自更新下载）
 ├─ devtools/                    # 开发自查脚本（check_*.py / verify_*.py / selftest.py / 截图）
 ├─ docs/                        # 设计与功能文档
+├─ requirements.txt             # 运行时依赖（只有 PyQt5）
+├─ requirements-dev.txt         # 打包 / 设计器 / 图标依赖
 ├─ run_checks.py / run_checks.bat   # 一键自查入口
 ├─ func-list.md                 # 功能清单与取舍记录（一行一个功能，带「保留」列）
 └─ README.md                    # 本文件
@@ -232,7 +239,7 @@ run_checks.bat device     # 再加上真机相关的 4 项（要连板子）
   失败则当前版本不动，避免半截 exe 换上去后新版本起不来。
 - 仓库若改为私有：在本机数据文件的 `config` 段加 `"update_token": "ghp_xxx"`。
 
-当前版本：**v3.2.19**
+当前版本：**v3.2.20**
 
 ---
 

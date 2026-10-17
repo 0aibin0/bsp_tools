@@ -282,16 +282,18 @@ class CommandRunner(QWidget):
 
     # ---------- 执行 ----------
 
-    def run(self, command, label=None, echo=True, on_result=None):
+    def run(self, command, label=None, echo=True, on_result=None, quiet=False):
         """执行一条命令。
 
         command 可以说设备端命令（dumpsys battery），会自动补 adb shell 前缀；
-        on_result: 可选回调 on_result(exit_code, output)，用于模块解析输出。
+        on_result: 可选回调 on_result(exit_code, output)，用于模块解析输出；
+        quiet: 不写结果面板、不弹完成/失败提示，只把结果交给 on_result。
+               给「进页面自动读设备状态」用——那种读取不该刷屏，也不该弹 toast。
         """
         label = label or command
         full_command = device_cmd(command)
         self.last_command = full_command
-        if self.panel is not None:
+        if self.panel is not None and not quiet:
             if echo:
                 self.panel.append_command(full_command, label)
             self.panel.set_running(label)
@@ -299,7 +301,8 @@ class CommandRunner(QWidget):
         worker = CommandWorker(full_command, label, parent=self)
         if on_result is not None:
             worker.done.connect(on_result)
-        worker.done.connect(self._on_done)
+        if not quiet:
+            worker.done.connect(self._on_done)
         worker.finished.connect(lambda w=worker: self._cleanup(w))
         self._workers.append(worker)
         worker.start()

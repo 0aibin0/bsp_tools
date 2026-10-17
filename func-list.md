@@ -186,6 +186,17 @@
 
 ---
 
+## 本次已执行（v3.2.20）
+
+| 项 | 处理 |
+| --- | --- |
+| 19 / 62 | 显示调试新增「亮度表…」：生成 / 校验 `screenBrightnessMap`。value 与 nits 强制非递减、HBM 连续且在末尾、算 transitionPoint（写外层 `highBrightnessMode`） |
+| 80-81 | Initcode Builder 新增第 5 种输出风格「QCOM 数组」（`dtype/last/vc/ack/post_wait/tx_len(大端)`，仅末包 last=1）+ 「校验 QCOM」按钮逐包核 `7 + tx_len` |
+| 35 | 屏幕 DPI 增加反算模式：目标 PPI → 所需对角线 / 物理尺寸 |
+| — | porch 六个输入框定宽 48 → 52，`inspect_ui --flag` 不再误报「压缩」 |
+| 77-78 | scrcpy / APK 路径改成自动探测，不再写死本机 `D:\` 路径 |
+| 83-86 | 工程：`requirements.txt`、GitHub Actions 离线自查、`run_checks` 的 `.venv` 兜底、`main.ico` 真 ICO、`.gitignore` 补 `~$*` 与 `.claude/` |
+
 ## 本次已执行（v3.2.19）
 
 | 项 | 处理 |

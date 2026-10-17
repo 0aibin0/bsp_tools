@@ -42,6 +42,11 @@ jobs:
           $lines = Get-Content checks.log
           $lines | Select-Object -Last 30
 
+          # 结果摘要写成 notice 注解：Actions 页面可见，也方便用公开 API 核对
+          # （没有这句就只能翻日志，而日志下载需要 admin 权限）
+          $summary = ($lines | Select-Object -Last 8) -join ' | '
+          Write-Host "::notice title=自查结果::exit=$code $summary"
+
           if ($code -ne 0) {
             $fails = @($lines | Select-String -Pattern 'FAIL|项失败|超时' |
                        ForEach-Object { $_.Line.Trim() })

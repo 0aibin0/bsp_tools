@@ -47,6 +47,8 @@ devtools/shots*/
 devtools/_*
 _*.tmp
 _commitmsg.txt
+# CI 里 run_checks 的日志落盘
+checks.log
 
 # ===== 编辑器 / 系统 =====
 .idea/

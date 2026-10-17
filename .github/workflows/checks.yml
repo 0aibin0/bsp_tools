@@ -31,5 +31,21 @@ jobs:
         run: python -m pip install --upgrade pip -r requirements.txt
 
       # run_checks.py 会优先用 .venv；CI 里没有，会自动退回 sys.executable
+      #
+      # 失败时把 FAIL 行写成 ::error:: 注解：GitHub 会把它显示在 Actions 页面，
+      # 也能通过公开的 check-runs/annotations API 读到——否则只能翻完整日志。
       - name: 离线自查
-        run: python run_checks.py
+        shell: pwsh
+        run: |
+          python run_checks.py *> checks.log
+          $code = $LASTEXITCODE
+          $lines = Get-Content checks.log
+          $lines | Select-Object -Last 30
+
+          if ($code -ne 0) {
+            $fails = @($lines | Select-String -Pattern 'FAIL|项失败|超时' |
+                       ForEach-Object { $_.Line.Trim() })
+            if ($fails.Count -eq 0) { $fails = @($lines | Select-Object -Last 20) }
+            foreach ($line in $fails) { Write-Host "::error::$line" }
+            exit $code
+          }

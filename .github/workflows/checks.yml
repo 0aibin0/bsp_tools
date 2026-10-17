@@ -6,7 +6,8 @@ name: checks
 
 on:
   push:
-    branches: [main]
+    # 仓库默认分支是 master；main 保留作历史分支，两个都跑，避免漏检
+    branches: [master, main]
   pull_request:
   workflow_dispatch:
 

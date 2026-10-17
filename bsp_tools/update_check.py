@@ -265,7 +265,7 @@ $oldPid = {pid}
 $expected = {expected}
 # 0) 新文件不完整就别动旧版本（第二道保险）
 if (($expected -gt 0) -and ((Get-Item -LiteralPath $new).Length -ne $expected)) {{
-    Start-Process -FilePath $target
+    Start-Process -FilePath $target -WorkingDirectory (Split-Path -Parent $target)
     exit 0
 }}
 # 1) 等旧进程退出（最多 {wait} 秒）
@@ -289,11 +289,13 @@ if (-not $moved) {{
     if ((-not (Test-Path -LiteralPath $target)) -and (Test-Path -LiteralPath $backup)) {{
         Rename-Item -LiteralPath $backup -NewName (Split-Path -Leaf $target) -Force
     }}
-    Start-Process -FilePath $target
+    Start-Process -FilePath $target -WorkingDirectory (Split-Path -Parent $target)
     exit 0
 }}
 Start-Sleep -Milliseconds 800
-Start-Process -FilePath $target
+# 必须带 -WorkingDirectory：单文件版按「当前工作目录」解包（spec 里
+# runtime_tmpdir='.'），工作目录不对就会解到别处，甚至解到只读目录起不来
+Start-Process -FilePath $target -WorkingDirectory (Split-Path -Parent $target)
 """.format(target=_ps_quote(target_exe),
            new=_ps_quote(new_path),
            backup=_ps_quote(backup),

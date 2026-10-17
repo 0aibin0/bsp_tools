@@ -640,7 +640,17 @@ class MainWindow(QMainWindow):
 
     def show_changelog(self):
         self._info_box("更新日志",
-                       "v3.2.20 (当前)\n"
+                       "v3.2.21 (当前)\n"
+                       "  - 修「自动更新后启动弹 Failed to load Python DLL … 找不到指定的\n"
+                       "    模块」：单文件版以前解包到 %TEMP%（系统盘），部分机器上的安全\n"
+                       "    策略会拦「从系统盘临时目录加载 DLL」——解包目录里 python311.dll\n"
+                       "    明明完整（5.7MB）也照样加载失败。现在改成解包到 exe 所在目录\n"
+                       "    （spec 的 runtime_tmpdir='.'），不碰系统 Temp；更新器启动新版本\n"
+                       "    时会显式设置工作目录。\n"
+                       "  - 顺带确认：这个报错与下载完整性无关——出问题的 exe 与构建产物\n"
+                       "    SHA256 完全一致、大小也对。以前三道校验防的是「半截 exe」，\n"
+                       "    这次是环境拦截，症状一样但根因不同。\n\n"
+                       "v3.2.20 (2026-10-17)\n"
                        "  - 显示调试新增「亮度表…」：生成 / 校验 screenBrightnessMap。\n"
                        "    value 与 nits 强制非递减（只要有一处递减，loadBrightnessMap\n"
                        "    会丢整张表 → getBrightnessFromBacklight NPE → system_server\n"
@@ -1355,6 +1365,10 @@ def main():
         print("DisplayTools 已在运行，已激活原窗口。")
         return 0
     window._single_instance = guard          # 保住引用，否则会被回收
+
+    # 单文件版解包到 exe 旁边；上一次要是被强杀/崩了，会留下 ~100MB 的 _MEI*
+    # 目录，这里顺手清掉（只清 30 分钟前的、跳过当前这个）
+    app_runtime.cleanup_stale_boot_dirs()
 
     window.show()
 

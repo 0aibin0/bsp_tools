@@ -6,7 +6,9 @@ Qt 没有现成的单实例方案。不用 QSharedMemory 是因为它在"进程�
 """
 
 import os
+import shutil
 import sys
+import time
 import traceback
 from datetime import datetime
 
@@ -60,6 +62,45 @@ class SingleInstance(QObject):
             conn.disconnectFromServer()
         if callable(self._on_activate):
             self._on_activate()
+
+
+def cleanup_stale_boot_dirs(min_age_seconds=1800):
+    """删掉 exe 旁边遗留的 `_MEI*` 解包目录（单文件版专用）。
+
+    单文件版按 spec 里的 `runtime_tmpdir='.'` 把自身解包到**exe 所在目录**，
+    正常退出时 PyInstaller 会自己清掉；被强杀或崩溃就会留下一个约 100MB
+    的目录。这里在启动时顺手清一次。
+
+    两条保险：
+    - 只在打包运行时做（源码跑没有 _MEI，也不该动源码目录）；
+    - 只删 30 分钟前的，且跳过当前正在用的那个，避免误删另一个刚启动的实例。
+    """
+    if not getattr(sys, "frozen", False):
+        return []
+    current = os.path.abspath(getattr(sys, "_MEIPASS", "") or "")
+    base = os.path.dirname(os.path.abspath(sys.executable))
+    removed = []
+    try:
+        names = os.listdir(base)
+    except OSError:
+        return removed
+
+    now = time.time()
+    for name in names:
+        if not name.startswith("_MEI"):
+            continue
+        path = os.path.join(base, name)
+        if not os.path.isdir(path) or os.path.abspath(path) == current:
+            continue
+        try:
+            if now - os.path.getmtime(path) < min_age_seconds:
+                continue
+            shutil.rmtree(path, ignore_errors=True)
+            if not os.path.isdir(path):
+                removed.append(name)
+        except OSError:
+            pass
+    return removed
 
 
 # ================= 崩溃日志 =================

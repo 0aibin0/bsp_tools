@@ -246,6 +246,15 @@ cd bsp_tools
 ..\.venv\Scripts\python.exe -m PyInstaller --noconfirm --clean DisplayTools.spec
 ```
 
+> **解包位置**：单文件版**不再解包到 `%TEMP%`**，而是解到 exe 所在目录
+> （spec 里 `runtime_tmpdir='.'`）。原因：部分机器上的安全策略会拦「从系统盘
+> 临时目录加载 DLL」，症状是启动弹 `Failed to load Python DLL … 找不到指定的
+> 模块`，但 exe 大小、SHA256 全对——和「半截 exe」是两回事。
+> 因此：**双击启动没问题**（工作目录就是 exe 目录），用命令行或快捷方式启动时
+> 要把工作目录设成 exe 所在目录；更新器 `update_check` 已经显式传
+> `-WorkingDirectory`。被强杀留下的 `_MEI*` 目录，下次启动会自动清掉
+> （`app_runtime.cleanup_stale_boot_dirs()`，只清 30 分钟前的）。
+
 固定工位想秒开可以用目录版（冷启动 0.91s vs 单文件版 1.79s，代价是 140 个
 文件、95MB，产物不进仓库）：
 

@@ -64,7 +64,12 @@ exe = EXE(
     strip=False,
     upx=True,
     upx_exclude=[],
-    runtime_tmpdir=None,
+    # 单文件版默认解包到 %TEMP%（在系统盘），某些安全策略会拦「从 C: 临时目录
+    # 加载 DLL」，表现就是启动弹 "Failed to load Python DLL ... 找不到指定的模块"
+    # （实测：解包到 C: 任何目录都失败，解包到 D: 就正常）。
+    # 改成 '.'（相对当前工作目录）——双击启动时 CWD 就是 exe 所在目录，
+    # 解包落在 exe 旁边，不碰系统 Temp。更新器启动新版本时会显式设 WorkingDirectory。
+    runtime_tmpdir='.',
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,

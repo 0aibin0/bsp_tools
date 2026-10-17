@@ -223,14 +223,18 @@ def main():
           os.path.basename(fpath) == "DisplayTools.json", fpath)
     # 新增的这条必须真的在文件里（不是只在内存里）
     import app_data
+    import app_config
+    # 干净检出的仓库里 DisplayTools.json 还不存在，config 段是空的；
+    # 这里先用公开 API 写一个值，才能确定性地验证「设置也存在同一个文件里」。
+    # （以前直接断言 config 非空，靠的是本机早就有配置文件——CI 上必挂）
+    app_config.config().update(selftest_marker="1")
     _raw = json.load(open(fpath, encoding="utf-8"))
     check("新增的命令真的落进文件的 commands 段",
           any(item.get("command") == "adb shell echo self-test"
               for item in _raw.get(app_data.SECTION_COMMANDS, [])),
           str(_raw.get(app_data.SECTION_COMMANDS, [])[-2:]))
     check("设置也在同一个文件里（config 段）",
-          isinstance(_raw.get(app_data.SECTION_CONFIG), dict)
-          and bool(_raw.get(app_data.SECTION_CONFIG)),
+          _raw.get(app_data.SECTION_CONFIG, {}).get("selftest_marker") == "1",
           str(list(_raw.get(app_data.SECTION_CONFIG, {}))[:4]))
     fav.search_edit.setText("自测命令")
     fav.render_list()

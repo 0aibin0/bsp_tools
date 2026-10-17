@@ -59,6 +59,10 @@ STYLE_LABELS = (
 
 _HEX_DIGITS = "0123456789abcdefABCDEF"
 
+# mipi.write 一行一条命令：`mipi.write <块类型> <负载字节...>`。
+# 前缀大小写、点/下划线、有没有空格都认（mipi.write / MIPI.WRITE / mipi_write）。
+_MIPI_WRITE_RE = re.compile(r"^\s*mipi\s*[._]?\s*write\b", re.IGNORECASE)
+
 
 class InitcodeEntry(tuple):
     """一条解析结果：(kind, cmd, params)。
@@ -266,22 +270,92 @@ def parse_initcode(text):
     return result
 
 
+def parse_mipi_write(text):
+    """把 mipi.write 命令清单转成 initcode 条目（**保留行首的块类型**）。
+
+    mipi.write 的写法和 initcode 的对应关系是一行对一条：
+
+        mipi.write 0x39 0xD7 0x10 0x0C 0x36 0x19 0x90 0x90
+        ↓
+        0x39,0x00,0x00,0x07,0xd7,0x10,0x0c,0x36,0x19,0x90,0x90,
+
+    即「块类型」直接当包头首字节，负载长度 = 负载字节数，负载第一个字节就是
+    DCS 命令（0xD7），其余是参数；包头后面两个字节填 0x00。
+
+    认这几种写法（大小写、逗号/空格混用都行）：
+
+        mipi.write 0x39 0xD7 0x10 0x0C
+        mipi.write 0x39,0xD7,0x10,0x0C
+        MIPI.WRITE 0x29 0x75 0x03 0x04
+        0x29 0x75 0x03 0x04            （省略前缀，按「块类型 + 负载」理解）
+
+    解析失败不抛异常：能认的行照样返回，问题写进返回值的 .error。
+    """
+    result = ParseResult()
+    if not text or not text.strip():
+        return result
+
+    problems = []
+    entries = []
+    for lineno, code, raw in _strip_comments(text):
+        line = code.strip()
+        if not line:
+            continue
+        match = _MIPI_WRITE_RE.match(line)
+        if match:
+            line = line[match.end():]          # 去掉 mipi.write 前缀，剩下字节
+
+        values = [value & 0xff for value in _scan_line(line)]
+        if not values:
+            problems.append(
+                "第 {} 行没有识别到十六进制字节：{}".format(lineno, raw.strip()))
+            continue
+
+        header, payload = values[0], values[1:]
+        if not payload:
+            problems.append(
+                "第 {} 行只有块类型 0x{:02x}，后面没有 DCS 命令。".format(
+                    lineno, header))
+            continue
+        if len(payload) > 0xff:
+            problems.append(
+                "第 {} 行负载 {} 字节，超过长度字节上限 255，无法表示。".format(
+                    lineno, len(payload)))
+            continue
+
+        fixed = FIXED_PAYLOAD.get(header)
+        if fixed is not None and fixed != len(payload):
+            problems.append(
+                "第 {} 行块类型 0x{:02x} 固定带 {} 个负载字节，实际给了 {} 个。".format(
+                    lineno, header, fixed, len(payload)))
+
+        entries.append(InitcodeEntry(
+            kind_of(header), payload[0], payload[1:],
+            raw=raw.strip(), header=header))
+
+    result.extend(entries)
+    result.error = "\n".join(problems)
+    return result
+
+
 def to_dcs(entry):
     """把一条解析结果写回 initcode 字节行。
 
     写法与正向生成完全一致（逗号分隔、小写两位十六进制、行尾带逗号）：
         0x39,0x00,0x00,0x05,0x1a,0x2b,0x3c,0x4d,0x5e,
+
+    块类型优先用条目自己带的 header：mipi.write 里的 0x29（Generic long write）
+    和 0x39（DCS long write）负载长度可能完全一样，按长度重推会把 0x29 悄悄
+    改写成 0x39，下发到屏体的行为可能不同。只有拿不到 header（例如直接传
+    三元组）时才退回按负载长度推断。
     """
-    kind, cmd, params = entry
-    payload = [cmd] + list(params)
+    payload = [entry[1]] + list(entry[2])
     count = len(payload)
-    if count <= 1:
-        prefix = (0x05, 0x78, 0x00)
-    elif count == 2:
-        prefix = (0x15, 0x00, 0x00)
-    else:
-        prefix = (0x39, 0x00, 0x00)
-    values = list(prefix) + [count] + payload
+    header = getattr(entry, "header", 0) or 0
+    if not header:
+        header = 0x05 if count <= 1 else (0x15 if count == 2 else 0x39)
+    # 包头后两个字节只是填充：沿用正向生成的老规矩（1 字节负载写 0x78,0x00）
+    values = [header, 0x78 if count <= 1 else 0x00, 0x00, count] + payload
     return ",".join("0x{:02x}".format(int(value) & 0xff) for value in values) + ","
 
 
@@ -372,6 +446,7 @@ class InitcodeBuilderPage(BaseToolPage, Ui_InitcodeBuilder):
         self.radioButton_2.clicked.connect(self.select_command)
         self.radioButton_3.clicked.connect(self.select_command)
         self.radioButton_4.clicked.connect(self.select_command)
+        self.radioButton_5.clicked.connect(self.select_command)
 
         # 反向解析区块（控件本体在 ui_initcode_builder.py 里创建）
         self._reverse_entries = []
@@ -488,6 +563,15 @@ class InitcodeBuilderPage(BaseToolPage, Ui_InitcodeBuilder):
             self.textEdit.setPlaceholderText(
                 "Enter hex GEN_WR strings\n**********\nGEN_WR(0x1a,0x2b,0x3c,0x4d,0x5e);\n**********\n")
             self.pushButton.clicked.connect(self.initcodebuilder_4)
+        elif self.radioButton_5.isChecked():
+            self.format_hint.setText("当前格式: mipi.write")
+            self.textEdit.setPlaceholderText(
+                "Enter mipi.write strings\n**********\n"
+                "mipi.write 0x39 0xD7 0x10 0x0C 0x36 0x19 0x90 0x90\n"
+                "mipi.write 0x29 0x75 0x03 0x04\n**********\n"
+                "行首那个字节是块类型（0x39 DCS 长包写 / 0x29 通用长包写…），"
+                "原样保留，不按负载长度重推")
+            self.pushButton.clicked.connect(self.initcodebuilder_5)
 
     def initcodebuilder_1(self):
         """处理 WriteAddr 和 WriteData 格式"""
@@ -642,3 +726,29 @@ class InitcodeBuilderPage(BaseToolPage, Ui_InitcodeBuilder):
             output_rows.append(final_line)
 
         self.textEdit_2.setPlainText("\n".join(output_rows))
+
+    def initcodebuilder_5(self):
+        """处理 mipi.write 格式：一行一条命令 → 一条 initcode。
+
+        行首的块类型原样保留（0x39 / 0x29 / 0x05 / 0x15 …），不按负载长度重推：
+        0x29 和 0x39 的负载长度可能一样，但包语义不同，重推会改掉下发行为。
+        有问题的行不会静默丢掉——条数照样生成，问题写在格式提示里。
+        """
+        result = parse_mipi_write(self.textEdit.toPlainText())
+        entries = list(result)
+        self.textEdit_2.setPlainText("\n".join(to_dcs(entry) for entry in entries))
+
+        if not entries:
+            first = result.error.splitlines()[0] if result.error else \
+                "没有识别到 mipi.write 命令"
+            self.format_hint.setText("当前格式: mipi.write · " + first)
+            return
+
+        if result.error:
+            problems = result.error.splitlines()
+            self.format_hint.setText(
+                "当前格式: mipi.write · 已生成 {} 条，另有 {} 行有问题：{}".format(
+                    len(entries), len(problems), problems[0]))
+        else:
+            self.format_hint.setText(
+                "当前格式: mipi.write · 已生成 {} 条 initcode".format(len(entries)))

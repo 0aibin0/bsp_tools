@@ -156,7 +156,7 @@
 
 | 编号 | 功能 | 说明 | 建议 | 保留 |
 | --- | --- | --- | --- | --- |
-| 80 | Initcode 正向生成 | 4 种格式：WriteAddr / Write(Command) / Rxx / GEN_WR | 保留 | 是 |
+| 80 | Initcode 正向生成 | 5 种格式：WriteAddr / Write(Command) / Rxx / GEN_WR / **mipi.write** | 保留 | 是 |
 | 81 | **Initcode 反向解析** | 字节序列 → DCS 命令清单 → 转回 4 种格式 | 保留 | 是 |
 | 82 | LK ↔ Kernel 互转 + LK→BAT | 三个转换页面 | 待定 | 是 |
 
@@ -185,6 +185,12 @@
 | 6 | 26（连带 63-65） | 文件管理模块 | Shell Tools 已有 push/pull |
 
 ---
+
+## 本次已执行（v3.2.18）
+
+| 项 | 处理 |
+| --- | --- |
+| 80 | Initcode Builder 新增第 5 种输入格式 **mipi.write**：一行一条 `mipi.write 0x39 0xD7 …` 直接转成 initcode 字节行。行首块类型原样保留（`0x29` 通用长包写 / `0x39` DCS 长包写负载长度可能相同，按长度重推会改掉下发到屏体的 DSI 数据类型）；注释 / 空行 / 逗号 / 大小写 / 省略前缀都能认，某行有问题不影响其余行。check_initcode 65 → 91 项 |
 
 ## 本次已执行（v3.2.17）
 

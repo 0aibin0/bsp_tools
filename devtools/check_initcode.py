@@ -7,6 +7,8 @@
 4. 长度字节不匹配 / 数据截断 / 尾部残缺时报错，且已认出的条目不被丢弃
 5. 空输入、纯噪声输入不崩
 6. 界面槽函数：解析清单、输出格式切换、复制结果
+7. mipi.write 格式（第 5 种输入）：真实 10 条屏体点亮序列 → initcode，
+   块类型 0x29 / 0x39 必须原样保留，往返解析后命令/参数/块类型一致
 
 用法（仓库根目录）：
     $env:QT_QPA_FONTDIR="C:\\Windows\\Fonts"; .\\.venv\\Scripts\\python.exe devtools\\_check_initcode.py
@@ -27,7 +29,7 @@ from PyQt5.QtWidgets import QApplication                     # noqa: E402
 import initcode_builder as icb                               # noqa: E402
 from initcode_builder import (KIND_LONG, KIND_SHORT,         # noqa: E402
                               KIND_SHORT_1P, parse_initcode, format_as,
-                              format_list, to_dcs)
+                              format_list, to_dcs, parse_mipi_write)
 
 FAILURES = []
 CHECKS = [0]
@@ -69,6 +71,47 @@ EXPECTED_ENTRIES = [
 
 # 风格 → 正向第几号生成函数（byte 风格本身就是正向的输出格式）
 STYLE_TO_FORWARD = {"write": 2, "rxx": 3, "gen_wr": 4}
+
+# mipi.write 真实样本（T820 屏体点亮序列，10 条）。第 8 条用 0x29
+# （Generic long write），其余用 0x39（DCS long write）——这两者负载长度
+# 可能一样，必须原样保留，不能按长度重推。
+MIPI_SAMPLE = "\n".join([
+    "mipi.write 0x39 0xD7 0x10 0x0C 0x36 0x19 0x90 0x90",
+    "",
+    "mipi.write 0x39 0xA3 0x40 0x03 0x80 0xFF 0x04 0x00 0x00 0x00 0x00 0x05 0x00 "
+    "0x68 0x00 0x0A 0x00 0x05 0x05 0x00 0x00 0x00 0x00 0x46 0x00 0x00 0x02 0x6F "
+    "0x12 0x00 0x05 0x00 0x00 0xFF",
+    "",
+    "mipi.write 0x39 0xA6 0x0E 0x00 0x04 0x44 0x35 0x00 0x38 0x00 0x78 0x78 0x00 "
+    "0x04 0x44 0x36 0x00 0x37 0x00 0x78 0x78 0x02 0xC4 0x77 0x33 0x05 0x00 0x06 "
+    "0x2F 0x5E 0x00 0xAC 0x11 0x32 0x06 0x00 0x00 0x2F 0x5E 0x00 0x00 0x06 0x00 "
+    "0x00 0x00 0x00",
+    "",
+    "mipi.write 0x39 0xA7 0x19 0x19 0x00 0x64 0x00 0x07 0x16 0x41 0x02 0x08 0x07 "
+    "0x78 0x78 0x00 0x64 0x00 0x25 0x34 0x03 0x04 0x06 0x05 0x78 0x78 0x00 0x64 "
+    "0x40 0x4B 0x5A 0x00 0x00 0x02 0x01 0x78 0x78 0x00 0x24 0x00 0x69 0x78 0x00 "
+    "0x00 0x00 0x00 0x78 0x78 0x00 0x44",
+    "",
+    "mipi.write 0x39 0xAC 0x12 0x10 0x0B 0x01 0x09 0x02 0x04 0x1B 0x06 0x02 0x19 "
+    "0x1B 0x19 0x19 0x18 0x18 0x13 0x11 0x0A 0x03 0x08 0x00 0x04 0x1B 0x06 0x00 "
+    "0x19 0x1B 0x19 0x1B 0x18 0x18 0xFF 0x99 0xFF 0x99 0x00",
+    "",
+    "mipi.write 0x39 0xAD 0xCC 0x00 0x46 0x00 0x06 0x5E 0x2F",
+    "",
+    "mipi.write 0x39 0xE8 0x30 0x07 0x00 0x94 0x94 0x9C 0x00 0xE2 0x04 0x00 0x00 "
+    "0x00 0x00 0xEF",
+    "",
+    "mipi.write 0x29 0x75 0x03 0x04",
+    "",
+    "mipi.write 0x39 0xE7 0x8B 0x3C 0x00 0x0C 0xF0 0x5D 0x00 0x5D 0x00 0x5D 0x00 "
+    "0x5D 0x00 0xFF 0x00 0x08 0x7B 0x00 0x00 0xC8 0x6A 0x5A 0x08 0x1A 0x3C 0x00 "
+    "0x81 0x01 0x8C 0x01 0x7F 0xF0 0x22",
+    "",
+    "mipi.write 0x39 0xE9 0x33 0x7F 0x08 0x07 0x0A 0x6A 0x22 0x1A 0x33",
+])
+
+MIPI_EXPECTED_FIRST = "0x39,0x00,0x00,0x07,0xd7,0x10,0x0c,0x36,0x19,0x90,0x90,"
+MIPI_EXPECTED_GENERIC = "0x29,0x00,0x00,0x03,0x75,0x03,0x04,"
 
 
 def run_forward(page, index, text):
@@ -253,6 +296,104 @@ def main():
     page.on_reverse_parse()
     check("界面：空输入后输出框被清空", page.reverse_output.toPlainText() == "",
           page.reverse_output.toPlainText())
+
+    print("\n[9] mipi.write 格式：一行一条命令 → 一条 initcode")
+    mipi = parse_mipi_write(MIPI_SAMPLE)
+    check("真实样本：10 条且无错误",
+          len(mipi) == 10 and mipi.ok, "{} / {}".format(len(mipi), mipi.error))
+    mipi_lines = [to_dcs(entry) for entry in mipi]
+    check("真实样本：首条字节行与手算一致",
+          mipi_lines[0] == MIPI_EXPECTED_FIRST, mipi_lines[0])
+    check("真实样本：首条命令 0xD7 + 6 个参数",
+          mipi[0].cmd == 0xD7 and
+          list(mipi[0].params) == [0x10, 0x0C, 0x36, 0x19, 0x90, 0x90],
+          str(tuple(mipi[0])))
+    check("真实样本：块类型 0x29 未被改写成 0x39",
+           mipi[7].header == 0x29 and mipi_lines[7] == MIPI_EXPECTED_GENERIC,
+          "{} / {}".format(hex(mipi[7].header), mipi_lines[7]))
+    check("真实样本：其余 9 条仍是 0x39",
+          [entry.header for i, entry in enumerate(mipi) if i != 7] == [0x39] * 9,
+          str([hex(entry.header) for entry in mipi]))
+    check("真实样本：负载长度＝1＋参数个数",
+          all(len(entry.params) + 1 ==
+              int(mipi_lines[i].split(",")[3], 16)
+              for i, entry in enumerate(mipi)),
+          str([mipi_lines[i].split(",")[3] for i in range(len(mipi))]))
+
+    print("\n[10] mipi.write 往返：生成 → 反向解析 → 命令 / 参数 / 块类型一致")
+    mipi_round = parse_initcode("\n".join(mipi_lines))
+    check("往返：反向解析无错误", mipi_round.ok, mipi_round.error)
+    check("往返：条数一致", len(mipi_round) == len(mipi),
+          "{} vs {}".format(len(mipi_round), len(mipi)))
+    check("往返：每条命令 / 参数 / 块类型都一致",
+          len(mipi_round) == len(mipi) and all(
+              (a.cmd, list(a.params), a.header) == (b.cmd, list(b.params), b.header)
+              for a, b in zip(mipi, mipi_round)),
+          str([(hex(a.header), a.cmd) for a in mipi]))
+
+    print("\n[11] mipi.write 容错：注释 / 空行 / 逗号 / 无前缀 / 大写")
+    variants = parse_mipi_write(
+        "// 注释行里的 mipi.write 0x39 0xFF 不该被当成命令\n"
+        "\n"
+        "MIPI.WRITE 0x39,0xD7,0x10\n"
+        "mipi_write 0x29 0x75 0x03\n"
+        "0x15 0x51 0x0A\n"
+        "   \t  \n"
+        "mipi.write 0x39 0xE9  /* 块注释也忽略 */\n")
+    check("容错：4 条且无错误",
+          len(variants) == 4 and variants.ok,
+          "{} / {}".format(len(variants), variants.error))
+    check("容错：命令依次为 d7 / 75 / 51 / e9",
+          [entry.cmd for entry in variants] == [0xD7, 0x75, 0x51, 0xE9],
+          str([hex(entry.cmd) for entry in variants]))
+    check("容错：大写前缀与下划线写法都认",
+          variants[0].header == 0x39 and variants[1].header == 0x29,
+          str([hex(entry.header) for entry in variants]))
+    check("容错：注释里的 0xFF 没被吃进来",
+          variants[0].params == [0x10] and variants[3].params == [],
+          str([list(entry.params) for entry in variants]))
+
+    print("\n[12] mipi.write 异常输入：报错但不抛异常")
+    for label, text, expect in (
+            ("只有块类型", "mipi.write 0x39\n", "没有 DCS 命令"),
+            ("只有前缀", "mipi.write\n", "没有识别到十六进制字节"),
+            ("裸文字", "这里没有十六进制\n", "没有识别到十六进制字节"),
+            ("0x05 却给 3 字节", "mipi.write 0x05 0x1a 0x2b 0x3c\n", "0x05"),
+    ):
+        try:
+            bad = parse_mipi_write(text)
+            check("{}：报错且信息可读".format(label),
+                  bool(bad.error) and expect in bad.error, bad.error)
+        except Exception as exc:                                  # noqa: BLE001
+            check("{}：报错且信息可读".format(label), False, repr(exc))
+    shape = parse_mipi_write("mipi.write 0x05 0x1a 0x2b 0x3c\n")
+    check("块类型与负载不匹配时仍保留条目（不静默丢弃）",
+          len(shape) == 1 and shape[0].cmd == 0x1a, str([tuple(e) for e in shape]))
+    check("空输入不算错误", parse_mipi_write("").error == "")
+    check("只有空行不算错误", parse_mipi_write("\n\n  \n").error == "")
+
+    print("\n[13] mipi.write 界面：选格式 → Build → 输出")
+    page.radioButton_5.setChecked(True)
+    page.select_command()
+    check("选中 mipi.write 后格式提示正确",
+          "mipi.write" in page.format_hint.text(), page.format_hint.text())
+    page.textEdit.setPlainText(MIPI_SAMPLE)
+    page.initcodebuilder_5()
+    ui_lines = [line for line in page.textEdit_2.toPlainText().split("\n") if line]
+    check("界面：输出 10 行 initcode", len(ui_lines) == 10, str(len(ui_lines)))
+    check("界面：首行与纯函数结果一致", ui_lines[0] == MIPI_EXPECTED_FIRST, ui_lines[0])
+    check("界面：格式提示报出条数",
+          "10" in page.format_hint.text(), page.format_hint.text())
+    page.textEdit.setPlainText("mipi.write 0x39\n")
+    page.initcodebuilder_5()
+    check("界面：全部行都有问题时不崩、输出为空",
+          page.textEdit_2.toPlainText() == "" and
+          "没有 DCS 命令" in page.format_hint.text(),
+          "{} / {}".format(page.textEdit_2.toPlainText(), page.format_hint.text()))
+    page.textEdit.setPlainText("")
+    page.initcodebuilder_5()
+    check("界面：空输入不崩", page.textEdit_2.toPlainText() == "",
+          page.textEdit_2.toPlainText())
 
     page.close()
     app.processEvents()

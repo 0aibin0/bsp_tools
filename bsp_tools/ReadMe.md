@@ -14,7 +14,7 @@ python mainwindow.py
 | --- | --- |
 | 常用工具 | 9 个模块，见下表 |
 | Shell Tools | fastboot 烧录、func 功能键 + **自定义命令框（整宽，长命令一眼看全）**、Debug 的 density/printk、GPIO、Download Mode、ylog、APK、投屏（adb 类命令都在侧边栏「快捷操作」和 Ctrl+K 命令面板里，页面不再重复摆一份） |
-| Initcode Builder | 寄存器读写描述 ↔ initcode 字节序列（正反向） |
+| Initcode Builder | 寄存器读写描述 / **mipi.write 命令** ↔ initcode 字节序列（正反向） |
 | LK → Kernel | LK 十六进制序列 → 内核格式 |
 | Kernel → LK | 内核十六进制序列 → LK 格式 |
 | LK → BAT | 生成 DCS 写入批处理脚本 |

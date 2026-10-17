@@ -63,6 +63,13 @@ _HEX_DIGITS = "0123456789abcdefABCDEF"
 # 前缀大小写、点/下划线、有没有空格都认（mipi.write / MIPI.WRITE / mipi_write）。
 _MIPI_WRITE_RE = re.compile(r"^\s*mipi\s*[._]?\s*write\b", re.IGNORECASE)
 
+# 另外 4 种输入格式的「行首前缀」。和 mipi.write 一样：只有匹配上的行才解析，
+# 其余行（# 注释 / // 注释 / 空行 / 日志里抄来的别的前缀）直接丢弃。
+_PREFIX_WRITEADDR = re.compile(r"^Write(?:Addr|Data)\s*\(", re.IGNORECASE)
+_PREFIX_WRITE_COMMAND = re.compile(
+    r"^Write\s*\(\s*(?:Command|Parameter)\s*,", re.IGNORECASE)
+_PREFIX_RXX = re.compile(r"^R[0-9a-fA-F]{1,2}(?:\s|$)")
+
 
 class InitcodeEntry(tuple):
     """一条解析结果：(kind, cmd, params)。
@@ -121,7 +128,7 @@ def _bytes_from_run(run):
 
 
 def _strip_comments(text):
-    """去掉 // 行注释和 /* */ 块注释。
+    """去掉 // 行注释、# 行注释和 /* */ 块注释。
 
     返回 [(行号, 代码部分, 原始行), ...]：代码部分用于取字节，原始行用于展示。
     """
@@ -138,7 +145,7 @@ def _strip_comments(text):
                 else:
                     index += 1
                 continue
-            if raw.startswith("//", index):
+            if raw.startswith("//", index) or raw[index] == "#":
                 break
             if raw.startswith("/*", index):
                 in_block = True
@@ -148,6 +155,54 @@ def _strip_comments(text):
             index += 1
         rows.append((lineno, "".join(out), raw))
     return rows
+
+
+def _prefix_lines(text, prefix_re):
+    """按**行首前缀**过滤输入，返回 [(行号, 代码部分, 原始行), ...]。
+
+    只有匹配上 prefix_re 的行才留下；其余内容（# 注释、// 注释、空行、
+    日志里别的前缀、别的片段）**一律直接丢弃**，既不解析也不报错。
+
+    为什么要这道闸：以前是「整段文本到处捞十六进制」，把一段混合日志粘进来时，
+    别的模块的十六进制也会被吃进 initcode，而且很难发现。
+    """
+    rows = []
+    for lineno, code, raw in _strip_comments(text):
+        line = code.strip()
+        if line and prefix_re.match(line):
+            rows.append((lineno, line, raw.strip()))
+    return rows
+
+
+def _byte_text(value):
+    """把 0x1a / 1A / 1a 统一成 0x1a；不是合法字节（0..0xff）时返回 None。"""
+    try:
+        number = int(str(value).strip(), 16)
+    except (TypeError, ValueError):
+        return None
+    if not 0 <= number <= 0xff:
+        return None
+    return "0x{:02x}".format(number)
+
+
+def _initcode_row(command, params):
+    """「DCS 命令 + 参数」→ 一行 initcode 字节。正向 4 种格式共用。"""
+    payload = [command] + list(params)
+    count = len(payload)
+    if count <= 1:
+        prefix = "0x05,0x78,0x00"
+    elif count == 2:
+        prefix = "0x15,0x00,0x00"
+    else:
+        prefix = "0x39,0x00,0x00"
+    return ",".join([prefix, "0x{:02x}".format(count)] + payload) + ","
+
+
+def _instruction_re(names):
+    """GEN_WR 那类「指令名(...)」的行首前缀（指令名可在界面上改）。"""
+    return re.compile(
+        r"^(?:" + "|".join(re.escape(name) for name in names) + r")\s*\(",
+        re.IGNORECASE)
 
 
 def _scan_line(code):
@@ -287,7 +342,11 @@ def parse_mipi_write(text):
         mipi.write 0x39 0xD7 0x10 0x0C
         mipi.write 0x39,0xD7,0x10,0x0C
         MIPI.WRITE 0x29 0x75 0x03 0x04
-        0x29 0x75 0x03 0x04            （省略前缀，按「块类型 + 负载」理解）
+        mipi_write 0x29 0x75 0x03 0x04
+
+    **过滤规则**：只有以 mipi.write 开头的行才解析。其余内容——# 注释、// 注释、
+    空行、日志里别的前缀（如 `[ 12.3 ] mipi.write …`）、裸字节序列——一律直接
+    丢弃，不解析也不报错。前缀匹配上但内容残缺的行才会记进 .error。
 
     解析失败不抛异常：能认的行照样返回，问题写进返回值的 .error。
     """
@@ -297,18 +356,12 @@ def parse_mipi_write(text):
 
     problems = []
     entries = []
-    for lineno, code, raw in _strip_comments(text):
-        line = code.strip()
-        if not line:
-            continue
-        match = _MIPI_WRITE_RE.match(line)
-        if match:
-            line = line[match.end():]          # 去掉 mipi.write 前缀，剩下字节
-
-        values = [value & 0xff for value in _scan_line(line)]
+    for lineno, line, raw in _prefix_lines(text, _MIPI_WRITE_RE):
+        body = line[_MIPI_WRITE_RE.match(line).end():]   # 去掉前缀，剩下字节
+        values = [value & 0xff for value in _scan_line(body)]
         if not values:
             problems.append(
-                "第 {} 行没有识别到十六进制字节：{}".format(lineno, raw.strip()))
+                "第 {} 行只有 mipi.write 前缀，后面没有字节。".format(lineno))
             continue
 
         header, payload = values[0], values[1:]
@@ -331,7 +384,7 @@ def parse_mipi_write(text):
 
         entries.append(InitcodeEntry(
             kind_of(header), payload[0], payload[1:],
-            raw=raw.strip(), header=header))
+            raw=raw, header=header))
 
     result.extend(entries)
     result.error = "\n".join(problems)
@@ -429,7 +482,8 @@ class InitcodeBuilderPage(BaseToolPage, Ui_InitcodeBuilder):
 
         self.textEdit.setPlaceholderText(
             "Enter hex WriteAddr/WriteData strings\n**********\nWriteAddr(0x1a)\n"
-            "WriteData(0x2b)\nWriteData(0x3c)\nWriteData(0x4d)\nWriteData(0x5e)\n**********\n")
+            "WriteData(0x2b)\nWriteData(0x3c)\nWriteData(0x4d)\nWriteData(0x5e)\n"
+            "**********\n只解析以 WriteAddr( / WriteData( 开头的行，其余自动丢弃")
         self.textEdit_2.setReadOnly(True)
         self.textEdit_2.setPlaceholderText(
             "generate initcode \n(e.g. 0x39,0x00,0x00,0x05,0x1a,0x2b,0x3c,0x4d,0x5e)")
@@ -545,23 +599,30 @@ class InitcodeBuilderPage(BaseToolPage, Ui_InitcodeBuilder):
             self.format_hint.setText("当前格式: WriteAddr")
             self.textEdit.setPlaceholderText(
                 "Enter hex WriteAddr/WriteData strings\n**********\nWriteAddr(0x1a)\n"
-                "WriteData(0x2b)\nWriteData(0x3c)\nWriteData(0x4d)\nWriteData(0x5e)\n**********\n")
+                "WriteData(0x2b)\nWriteData(0x3c)\nWriteData(0x4d)\nWriteData(0x5e)\n"
+                "**********\n只解析以 WriteAddr( / WriteData( 开头的行，"
+                "其余（# 与 // 注释、空行、别的日志）自动丢弃")
             self.pushButton.clicked.connect(self.initcodebuilder_1)
         elif self.radioButton_2.isChecked():
             self.format_hint.setText("当前格式: Write(Command)")
             self.textEdit.setPlaceholderText(
                 "Enter hex Write(Command,0xxx)strings\n**********\nWrite(Command,0x1a);\n"
                 "Write(Parameter,0x2b);\nWrite(Parameter,0x3c);\nWrite(Parameter,0x4d);\n"
-                "Write(Parameter,0x5e);\n**********\n")
+                "Write(Parameter,0x5e);\n"
+                "**********\n只解析以 Write(Command, / Write(Parameter, 开头的行，"
+                "其余自动丢弃")
             self.pushButton.clicked.connect(self.initcodebuilder_2)
         elif self.radioButton_3.isChecked():
             self.format_hint.setText("当前格式: Rxx")
-            self.textEdit.setPlaceholderText("Enter hex Rxx strings\n**********\nR1a 2b 3c 4d 5e\n**********\n")
+            self.textEdit.setPlaceholderText(
+                "Enter hex Rxx strings\n**********\nR1a 2b 3c 4d 5e\n"
+                "**********\n只解析以 R + 十六进制字节开头的行，其余自动丢弃")
             self.pushButton.clicked.connect(self.initcodebuilder_3)
         elif self.radioButton_4.isChecked():
             self.format_hint.setText("当前格式: GEN_WR")
             self.textEdit.setPlaceholderText(
-                "Enter hex GEN_WR strings\n**********\nGEN_WR(0x1a,0x2b,0x3c,0x4d,0x5e);\n**********\n")
+                "Enter hex GEN_WR strings\n**********\nGEN_WR(0x1a,0x2b,0x3c,0x4d,0x5e);\n"
+                "**********\n只解析以右侧指令名（默认 GEN_WR）+ ( 开头的行，其余自动丢弃")
             self.pushButton.clicked.connect(self.initcodebuilder_4)
         elif self.radioButton_5.isChecked():
             self.format_hint.setText("当前格式: mipi.write")
@@ -569,162 +630,102 @@ class InitcodeBuilderPage(BaseToolPage, Ui_InitcodeBuilder):
                 "Enter mipi.write strings\n**********\n"
                 "mipi.write 0x39 0xD7 0x10 0x0C 0x36 0x19 0x90 0x90\n"
                 "mipi.write 0x29 0x75 0x03 0x04\n**********\n"
-                "行首那个字节是块类型（0x39 DCS 长包写 / 0x29 通用长包写…），"
-                "原样保留，不按负载长度重推")
+                "只解析以 mipi.write 开头的行；# 与 // 注释、空行、别的前缀"
+                "（含日志时间戳）一律丢弃。行首那个字节是块类型，原样保留")
             self.pushButton.clicked.connect(self.initcodebuilder_5)
 
     def initcodebuilder_1(self):
-        """处理 WriteAddr 和 WriteData 格式"""
-        input_str = self.textEdit.toPlainText()
-        rows = input_str.split('\n')
+        """处理 WriteAddr / WriteData 格式。
+
+        只解析以 WriteAddr( / WriteData( 开头的行；# 注释、// 注释、空行、
+        别的日志片段一律直接丢弃。
+        """
         output_rows = []
-        current_addr = None
-        data_values = []
+        current = None
+        values = []
 
-        def generate_output_row(addr, data_values):
-            data_count = len(data_values) + 1
-            data_count_hex = f"0x{data_count:02x}"
-            if data_count == 1:
-                prefix = '0x05,0x78,0x00'
-            elif data_count == 2:
-                prefix = '0x15,0x00,0x00'
-            else:
-                prefix = '0x39,0x00,0x00'
-            row = [prefix, data_count_hex, addr] + data_values
-            return ",".join(
-                [f"0x{num.lower()}" if not num.startswith("0x") else num.lower() for num in row]) + ","
+        def flush():
+            if current is not None:
+                output_rows.append(_initcode_row(current, values))
 
-        for row in rows:
-            row = row.split('//')[0].strip()
-            if not row:
+        for _lineno, line, _raw in _prefix_lines(
+                self.textEdit.toPlainText(), _PREFIX_WRITEADDR):
+            name, _, rest = line.partition("(")
+            value = _byte_text(rest.split(")")[0])
+            if value is None:
                 continue
-            if 'WriteAddr' in row:
-                if current_addr is not None:
-                    output_rows.append(generate_output_row(current_addr, data_values))
-                current_addr = row.split('(')[1].split(')')[0].strip()
-                data_values = []
-            elif 'WriteData' in row:
-                data = row.split('(')[1].split(')')[0].strip()
-                data_values.append(data)
-
-        if current_addr is not None:
-            output_rows.append(generate_output_row(current_addr, data_values))
-
+            if name.strip().lower() == "writeaddr":
+                flush()
+                current, values = value, []
+            elif current is not None:          # WriteData 要跟在 WriteAddr 后面
+                values.append(value)
+        flush()
         self.textEdit_2.setPlainText("\n".join(output_rows))
 
     def initcodebuilder_2(self):
-        """处理 Write(Command) 格式"""
-        input_str = self.textEdit.toPlainText()
-        rows = input_str.split('\n')
-        current_command = None
-        data_values = []
+        """处理 Write(Command) / Write(Parameter) 格式。
+
+        只解析以 Write(Command, / Write(Parameter, 开头的行，其余直接丢弃。
+        """
         output_rows = []
+        current = None
+        values = []
 
-        def generate_output_row(command, parameters):
-            data_count = len(parameters) + 1
-            data_count_hex = f"0x{data_count:02x}"
-            if data_count == 1:
-                prefix = '0x05,0x78,0x00'
-            elif data_count == 2:
-                prefix = '0x15,0x00,0x00'
-            else:
-                prefix = '0x39,0x00,0x00'
-            row = [prefix, data_count_hex, command] + parameters
-            return ",".join(
-                [f"0x{num.lower()}" if not num.startswith("0x") else num.lower() for num in row]) + ","
+        def flush():
+            if current is not None:
+                output_rows.append(_initcode_row(current, values))
 
-        for row in rows:
-            row = row.split('//')[0].strip()
-            if not row:
+        for _lineno, line, _raw in _prefix_lines(
+                self.textEdit.toPlainText(), _PREFIX_WRITE_COMMAND):
+            kind, _, rest = line.split("(", 1)[1].partition(",")
+            value = _byte_text(rest.split(")")[0])
+            if value is None:
                 continue
-            if 'Write(' in row:
-                content = row.split('(')[1].split(')')[0]
-                data_type, value = content.split(',')
-                data_type, value = data_type.strip(), value.strip()
-                if data_type == "Command":
-                    if current_command is not None:
-                        output_rows.append(generate_output_row(current_command, data_values))
-                    current_command = value
-                    data_values = []
-                elif data_type == "Parameter":
-                    data_values.append(value)
-
-        if current_command is not None:
-            output_rows.append(generate_output_row(current_command, data_values))
-
+            if kind.strip().lower() == "command":
+                flush()
+                current, values = value, []
+            elif current is not None:          # Parameter 要跟在 Command 后面
+                values.append(value)
+        flush()
         self.textEdit_2.setPlainText("\n".join(output_rows))
 
     def initcodebuilder_3(self):
-        """处理 Rxx 格式"""
-        input_str = self.textEdit.toPlainText()
-        input_str = input_str.replace("R", "")
-        lines = input_str.splitlines()
+        """处理 Rxx 格式。
+
+        只解析以 R + 1~2 位十六进制字节开头的行（R1a 2b 3c）；其余直接丢弃。
+        以前是先把全文的 "R" 全删掉再逐行切，粘一段混合文本时会连别的字母一起
+        吃进来，现在按行首前缀卡住。
+        """
         output_rows = []
-
-        for line in lines:
-            line = line.split('//')[0].strip()
-            if not line:
+        for _lineno, line, _raw in _prefix_lines(
+                self.textEdit.toPlainText(), _PREFIX_RXX):
+            values = [_byte_text(token) for token in line[1:].split()]
+            values = [value for value in values if value is not None]
+            if not values:
                 continue
-            hex_values = line.split()
-            hex_count = len(hex_values)
-            count_hex = f"0x{hex_count:02x}"
-            if hex_count == 1:
-                prefix = '0x05,0x78,0x00'
-            elif hex_count == 2:
-                prefix = '0x15,0x00,0x00'
-            else:
-                prefix = '0x39,0x00,0x00'
-            formatted_values = [f"0x{val.lower()}" for val in hex_values]
-            output_str = f"{prefix},{count_hex}," + ",".join(formatted_values) + ","
-            output_rows.append(output_str)
-
+            output_rows.append(_initcode_row(values[0], values[1:]))
         self.textEdit_2.setPlainText("\n".join(output_rows))
 
     def initcodebuilder_4(self):
-        """处理 GEN_WR 等格式"""
-        instructions_str = self.lineEdit.text()
-        instructions = [cmd.strip() for cmd in instructions_str.split(",")] if instructions_str else ['GEN_WR']
-        input_str = self.textEdit.toPlainText()
-        lines = input_str.splitlines()
+        """处理 GEN_WR 等格式。
+
+        指令名可在右侧输入框里改（逗号分隔多个，默认 GEN_WR）。只解析以这些
+        指令名 + "(" 开头的行，其余直接丢弃——以前没匹配上的行会原样透传到
+        输出里，粘一段混合文本时输出会跟着脏。
+        """
+        names = [name.strip() for name in
+                 (self.lineEdit.text() or "GEN_WR").split(",") if name.strip()]
+        if not names:
+            names = ["GEN_WR"]
         output_rows = []
-
-        for line in lines:
-            if line.strip().startswith("//") and not line.strip()[2:].strip():
-                output_rows.append(line)
+        for _lineno, line, _raw in _prefix_lines(
+                self.textEdit.toPlainText(), _instruction_re(names)):
+            body = line.split("(", 1)[1].split(")", 1)[0]
+            values = [_byte_text(token) for token in body.split(",")]
+            values = [value for value in values if value is not None]
+            if not values:
                 continue
-            comment_index = line.find("//")
-            if comment_index != -1:
-                code_part = line[:comment_index].strip()
-                comment_part = line[comment_index:].strip()
-            else:
-                code_part = line.strip()
-                comment_part = ""
-            if code_part:
-                code_part = code_part.split("//")[0].strip()
-                if not code_part:
-                    continue
-                for instruction in instructions:
-                    match = re.search(rf"{instruction}\((.*?)\);?", code_part)
-                    if match:
-                        hex_values = match.group(1).split(",")
-                        hex_count = len(hex_values)
-                        count_hex = f"0x{hex_count:02x}"
-                        if hex_count == 1:
-                            prefix = "0x05,0x78,0x00"
-                        elif hex_count == 2:
-                            prefix = "0x15,0x00,0x00"
-                        else:
-                            prefix = "0x39,0x00,0x00"
-                        formatted_values = [val.strip().lower() for val in hex_values]
-                        processed_code = f"{prefix},{count_hex}," + ",".join(formatted_values) + ","
-                        break
-                else:
-                    processed_code = code_part
-            else:
-                processed_code = ""
-            final_line = processed_code + comment_part
-            output_rows.append(final_line)
-
+            output_rows.append(_initcode_row(values[0], values[1:]))
         self.textEdit_2.setPlainText("\n".join(output_rows))
 
     def initcodebuilder_5(self):
@@ -740,7 +741,7 @@ class InitcodeBuilderPage(BaseToolPage, Ui_InitcodeBuilder):
 
         if not entries:
             first = result.error.splitlines()[0] if result.error else \
-                "没有识别到 mipi.write 命令"
+                "没有以 mipi.write 开头的行（其余内容已丢弃）"
             self.format_hint.setText("当前格式: mipi.write · " + first)
             return
 

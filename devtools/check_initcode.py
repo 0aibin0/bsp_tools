@@ -9,6 +9,8 @@
 6. 界面槽函数：解析清单、输出格式切换、复制结果
 7. mipi.write 格式（第 5 种输入）：真实 10 条屏体点亮序列 → initcode，
    块类型 0x29 / 0x39 必须原样保留，往返解析后命令/参数/块类型一致
+8. 五种输入格式都按**行首前缀**过滤：# 与 // 注释、空行、日志前缀、裸字节
+   一律丢弃，只有匹配前缀的行参与解析
 
 用法（仓库根目录）：
     $env:QT_QPA_FONTDIR="C:\\Windows\\Fonts"; .\\.venv\\Scripts\\python.exe devtools\\_check_initcode.py
@@ -331,33 +333,39 @@ def main():
               for a, b in zip(mipi, mipi_round)),
           str([(hex(a.header), a.cmd) for a in mipi]))
 
-    print("\n[11] mipi.write 容错：注释 / 空行 / 逗号 / 无前缀 / 大写")
+    print("\n[11] 行首过滤：只解析以 mipi.write 开头的行，其余全部丢弃")
     variants = parse_mipi_write(
-        "// 注释行里的 mipi.write 0x39 0xFF 不该被当成命令\n"
+        "# 注释行里的 mipi.write 0x39 0x00 应被丢弃\n"
+        "// 注释行里的 mipi.write 0x39 0x01 也丢弃\n"
         "\n"
+        "[  12.345 ] mipi.write 0x39 0xFF 0xFE\n"
         "MIPI.WRITE 0x39,0xD7,0x10\n"
         "mipi_write 0x29 0x75 0x03\n"
         "0x15 0x51 0x0A\n"
+        "任意中文说明 mipi.write 0x39 0xCC\n"
         "   \t  \n"
         "mipi.write 0x39 0xE9  /* 块注释也忽略 */\n")
-    check("容错：4 条且无错误",
-          len(variants) == 4 and variants.ok,
+    check("过滤：# / // / 日志前缀 / 裸字节都丢弃，只剩 3 条",
+          len(variants) == 3 and variants.ok,
           "{} / {}".format(len(variants), variants.error))
-    check("容错：命令依次为 d7 / 75 / 51 / e9",
-          [entry.cmd for entry in variants] == [0xD7, 0x75, 0x51, 0xE9],
+    check("过滤：命令依次为 d7 / 75 / e9",
+          [entry.cmd for entry in variants] == [0xD7, 0x75, 0xE9],
           str([hex(entry.cmd) for entry in variants]))
-    check("容错：大写前缀与下划线写法都认",
+    check("过滤：大写前缀与下划线写法都认",
           variants[0].header == 0x39 and variants[1].header == 0x29,
           str([hex(entry.header) for entry in variants]))
-    check("容错：注释里的 0xFF 没被吃进来",
-          variants[0].params == [0x10] and variants[3].params == [],
+    check("过滤：注释与无关行里的字节没被吃进来",
+          variants[0].params == [0x10] and variants[2].params == [],
           str([list(entry.params) for entry in variants]))
+    nothing = parse_mipi_write("# 只有注释\n// 还是注释\njunk 0x11\n0x39 0xD7\n")
+    check("过滤：一行都不匹配时输出为空且不报错",
+          len(nothing) == 0 and nothing.error == "",
+          "{} / {}".format(len(nothing), nothing.error))
 
-    print("\n[12] mipi.write 异常输入：报错但不抛异常")
+    print("\n[12] mipi.write 异常输入：前缀对上但内容残缺才报错")
     for label, text, expect in (
             ("只有块类型", "mipi.write 0x39\n", "没有 DCS 命令"),
-            ("只有前缀", "mipi.write\n", "没有识别到十六进制字节"),
-            ("裸文字", "这里没有十六进制\n", "没有识别到十六进制字节"),
+            ("只有前缀", "mipi.write\n", "后面没有字节"),
             ("0x05 却给 3 字节", "mipi.write 0x05 0x1a 0x2b 0x3c\n", "0x05"),
     ):
         try:
@@ -369,6 +377,9 @@ def main():
     shape = parse_mipi_write("mipi.write 0x05 0x1a 0x2b 0x3c\n")
     check("块类型与负载不匹配时仍保留条目（不静默丢弃）",
           len(shape) == 1 and shape[0].cmd == 0x1a, str([tuple(e) for e in shape]))
+    check("没有前缀的裸文字：静默丢弃，不算错误",
+          len(parse_mipi_write("这里没有十六进制\n")) == 0 and
+          parse_mipi_write("这里没有十六进制\n").error == "")
     check("空输入不算错误", parse_mipi_write("").error == "")
     check("只有空行不算错误", parse_mipi_write("\n\n  \n").error == "")
 
@@ -394,6 +405,35 @@ def main():
     page.initcodebuilder_5()
     check("界面：空输入不崩", page.textEdit_2.toPlainText() == "",
           page.textEdit_2.toPlainText())
+
+    print("\n[14] 其他 4 种格式同样按行首前缀过滤")
+    FILTERED = {
+        1: ("WriteAddr",
+            "# WriteAddr(0x99)\nWriteAddr(0x1a)\nWriteData(0x2b)\n"
+            "junk 0x77\n// WriteAddr(0x88)\nWriteData(0x3c)\n",
+            ["0x39,0x00,0x00,0x03,0x1a,0x2b,0x3c,"]),
+        2: ("Write(Command)",
+            "// Write(Command,0x99);\nWrite(Command,0x1a);\n"
+            "Write(Parameter,0x2b);\nother text 0x77\nWrite(Parameter,0x3c);\n",
+            ["0x39,0x00,0x00,0x03,0x1a,0x2b,0x3c,"]),
+        3: ("Rxx",
+            "# R99 88\nR1a 2b 3c\nhello R77\nR2c\n",
+            ["0x39,0x00,0x00,0x03,0x1a,0x2b,0x3c,",
+             "0x05,0x78,0x00,0x01,0x2c,"]),
+        4: ("GEN_WR",
+            "// GEN_WR(0x99);\nGEN_WR(0x1a,0x2b,0x3c);\nnoise 0x77\nGEN_WR(0x2c);\n",
+            ["0x39,0x00,0x00,0x03,0x1a,0x2b,0x3c,",
+             "0x05,0x78,0x00,0x01,0x2c,"]),
+    }
+    for index, (name, text, expected_rows) in FILTERED.items():
+        generated = run_forward(page, index, text)
+        rows = [line for line in generated.split("\n") if line.strip()]
+        check("{}：只保留匹配行，注释与无关行丢弃".format(name),
+              rows == expected_rows, "{} vs {}".format(rows, expected_rows))
+    for index, name in ((1, "WriteAddr"), (2, "Write(Command)"),
+                        (3, "Rxx"), (4, "GEN_WR")):
+        generated = run_forward(page, index, "完全是垃圾\n0x77 0x88\n随手说明\n")
+        check("{}：全部不匹配时输出为空".format(name), generated == "", generated)
 
     page.close()
     app.processEvents()

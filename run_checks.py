@@ -74,12 +74,19 @@ def run_one(name, args):
         print("  [超时] 超过 15 分钟没结束")
         return False, "timeout"
     text = proc.stdout.decode("utf-8", "replace")
-    # 只回显末几行：检查脚本本身会把明细打出来，这里要的是结论
     lines = [ln for ln in text.splitlines() if ln.strip()]
-    tail = lines[-4:] if len(lines) > 4 else lines
-    for line in tail:
-        print("  " + line)
-    return proc.returncode == 0, text
+    ok = proc.returncode == 0
+    if ok:
+        # 通过时只回显末几行：检查脚本自己会打明细，这里要的是结论
+        for line in (lines[-4:] if len(lines) > 4 else lines):
+            print("  " + line)
+    else:
+        # 失败时把 FAIL 行全部列出来——CI 上看不到完整日志，
+        # 这几行就是唯一定位线索（本地终端也会省得往上翻）
+        fails = [ln for ln in lines if "FAIL" in ln]
+        for line in (fails or lines[-10:]):
+            print("  " + line)
+    return ok, text
 
 
 def main():

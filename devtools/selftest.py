@@ -50,6 +50,17 @@ def check(label, condition, detail=""):
         FAILURES.append(label)
 
 
+def card_text(label):
+    """读指标卡上的值，优先取**未省略的全文**。
+
+    StatCard 的值是 ElidedLabel：宽度不够时会把文本中间换成省略号
+    （"1220x2712" → "122…712"）。字体不同（比如 CI 上没有中文字体、
+    回退字体更宽）就会让断言读到省略后的文本而误判失败。
+    """
+    full = getattr(label, "fullText", None)
+    return full() if callable(full) else label.text()
+
+
 def main():
     app = QApplication([])
     app.setFont(theme.app_font())
@@ -118,28 +129,33 @@ def main():
     print("\n[2] 设备信息：解析函数")
     dev = DeviceInfoSection()
     dev._apply_temp("48500")
-    check("温度 48500 → 48.5", "48.5" in dev.cards["temp"].value_label.text(),
-          dev.cards["temp"].value_label.text())
+    check("温度 48500 → 48.5", "48.5" in card_text(dev.cards["temp"].value_label),
+          card_text(dev.cards["temp"].value_label))
     dev._apply_battery("  level: 42\n  scale: 100")
-    check("电量解析 → 42", "42" in dev.cards["battery"].value_label.text(),
-          dev.cards["battery"].value_label.text())
+    check("电量解析 → 42", "42" in card_text(dev.cards["battery"].value_label),
+          card_text(dev.cards["battery"].value_label))
     dev._apply_memory("MemTotal:       8000000 kB\nMemAvailable:   2000000 kB")
-    check("内存占用 → 75", "75" in dev.cards["memory"].value_label.text(),
-          dev.cards["memory"].value_label.text())
+    check("内存占用 → 75", "75" in card_text(dev.cards["memory"].value_label),
+          card_text(dev.cards["memory"].value_label))
     dev._apply_storage("/dev/block/dm-5 110000000 90000000 20000000 82% /data")
-    check("存储占用（单行 df）→ 82", "82" in dev.cards["storage"].value_label.text(),
-          dev.cards["storage"].value_label.text())
+    check("存储占用（单行 df）→ 82",
+          "82" in card_text(dev.cards["storage"].value_label),
+          card_text(dev.cards["storage"].value_label))
     dev._apply_storage(
         "Filesystem 1K-blocks Used Available Use% Mounted on\n"
         "/dev/block/dm-5 110000000 95000000 15000000 91% /data")
-    check("存储占用（两行 df）→ 91", "91" in dev.cards["storage"].value_label.text(),
-          dev.cards["storage"].value_label.text())
+    check("存储占用（两行 df）→ 91",
+          "91" in card_text(dev.cards["storage"].value_label),
+          card_text(dev.cards["storage"].value_label))
     dev._apply_uptime("93784.20 300000.00")
-    check("运行时长格式化", dev.cards["uptime"].value_label.text() == "1d2h",
-          dev.cards["uptime"].value_label.text())
+    check("运行时长格式化", card_text(dev.cards["uptime"].value_label) == "1d2h",
+          card_text(dev.cards["uptime"].value_label))
     dev._apply("屏幕分辨率", "Physical size: 1220x2712")
-    check("分辨率提取", "1220x2712" in dev.cards["resolution"].value_label.text(),
-          dev.cards["resolution"].value_label.text())
+    # 这条以前断言的是标签**显示**的文本：字体一变宽，ElidedLabel 就把
+    # "1220x2712" 省略成 "122…712"，CI 上因此误报失败。改成读全文。
+    check("分辨率提取",
+          "1220x2712" in card_text(dev.cards["resolution"].value_label),
+          card_text(dev.cards["resolution"].value_label))
 
     print("\n[3] 文件管理：ls -la 解析")
     listing = (
@@ -182,8 +198,8 @@ def main():
     check("帧率 58.3", abs(sample['fps'] - 58.3) < 0.1, str(sample['fps']))
     check("Data 82%", sample['df'] == 82.0, str(sample['df']))
     perf._update_cards(sample)
-    check("帧率卡片刷新", "58" in perf.cards["fps"].value_label.text(),
-          perf.cards["fps"].value_label.text())
+    check("帧率卡片刷新", "58" in card_text(perf.cards["fps"].value_label),
+          card_text(perf.cards["fps"].value_label))
     check("空输出返回 None", perf._parse("") is None)
 
     print("\n[5] 命令收藏：增删改 + 持久化 + 与命令面板共用同一份数据")

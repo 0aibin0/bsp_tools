@@ -46,7 +46,7 @@ PAGE_DEFS = [
      InitcodeBuilderPage, "转换工具", "code"),
     # LK→Kernel / Kernel→LK / LK→BAT 合并成一页：三者界面结构完全相同，
     # 各占一行把侧边栏撑得很长。方向在页面顶部切换。
-    ("transform", "LK 转换", "LK ↔ Kernel 互转 · LK → BAT 批处理",
+    ("transform", "Initcode 格式转换", "LK ↔ Kernel 互转 · LK → BAT · UNISOC → QCOM",
      TransformPage, "转换工具", "arrow_right"),
 ]
 
@@ -634,7 +634,20 @@ class MainWindow(QMainWindow):
 
     def show_changelog(self):
         self._info_box("更新日志",
-                       "v3.2.23 (当前)\n"
+                       "v3.2.24 (当前)\n"
+                       "  - 转换工具页改名为「Initcode 格式转换」，并新增第 4 个方向\n"
+                       "    UNISOC → QCOM：把 UNISOC 平台的 kernel 命令集转成 QCOM 的\n"
+                       "    mdss-dsi-on-command 格式。\n"
+                       "      · UNISOC 每包 4 字节头（dtype + 2 字节填充 + 负载长度）\n"
+                       "      · QCOM 每包 7 字节头（dtype/last/vc/ack/post_wait/tx_len 大端）\n"
+                       "      · 负载原样搬运，只有最后一包 last=1\n"
+                       "      · 长度字节与实际负载不符、非法十六进制会报错并跳过该行\n"
+                       "  - 输出风格跟随输入：输入带 0x 就输出 0x，输入是裸十六进制就输出\n"
+                       "    裸十六进制（贴进 DTS 不用再手改），分隔符也统一成空格。\n"
+                       "  - 项目分析文档统一收进 docs/analysis/，根目录只留 README 与\n"
+                       "    func-list。\n"
+                       "  - selftest 287 → 294 项。\n\n"
+                       "v3.2.23 (2026-10-19)\n"
                        "  - 转换工具：LK → Kernel / Kernel → LK / LK → BAT 三个页面合并成\n"
                        "    一页「LK 转换」。三者界面结构本来完全一样（左输入右输出 +\n"
                        "    Convert/Clear/Copy），各占一行把侧边栏撑得很长；现在顶部一排\n"

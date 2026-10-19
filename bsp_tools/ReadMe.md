@@ -15,7 +15,7 @@ python mainwindow.py
 | 常用工具 | 9 个模块，见下表 |
 | Shell Tools | fastboot 烧录、func 功能键 + **自定义命令框（整宽，长命令一眼看全）**、Debug 的 density/printk、GPIO、Download Mode、ylog、APK、投屏（adb 类命令都在侧边栏「快捷操作」和 Ctrl+K 命令面板里，页面不再重复摆一份） |
 | Initcode Builder | 6 种输入格式（WriteAddr / Write(Command) / Rxx / GEN_WR / **mipi.write** / **REGS.WRITE**）↔ initcode 字节序列（正反向） |
-| LK 转换 | 一页三个方向（顶部单选切换）：LK → Kernel / Kernel → LK / LK → BAT |
+| Initcode 格式转换 | 一页多个方向（顶部单选切换）：LK → Kernel / Kernel → LK / LK → BAT / UNISOC → QCOM |
 
 ### 常用工具的 9 个模块
 
@@ -60,7 +60,8 @@ Shell Tools 是「左侧控制区（2 列网格）+ **右侧竖向 Log 面板**�
 
 快捷键：`Ctrl+K` 命令面板，`Ctrl+1`~`Ctrl+4` 切换页面。
 
-> 功能取舍见仓库根目录 `func-list.md`（一行一个功能，带「保留」列）。
+> 功能取舍见仓库根目录 `func-list.md`（一行一个功能，带「保留」列）；
+> 历次改动的分析文档在 `docs/analysis/`。
 
 ## 数据文件（与程序同目录）
 
@@ -137,7 +138,7 @@ run_checks.bat device     # 再加上真机相关的 4 项（要连板子）
 .venv\Scripts\python.exe devtools\check_layout.py      # 布局健康检查：多种窗口尺寸下检测重叠/压缩/越界
 .venv\Scripts\python.exe devtools\check_panel_width.py # 右侧两个面板的文本框必须都是 240px（固定，不随窗口变）
 .venv\Scripts\python.exe devtools\check_wraplabel.py   # 自动换行标签高度是否够（inspect_ui 的盲区）
-.venv\Scripts\python.exe devtools\selftest.py          # 逻辑自测 287 项（不需要连接设备）
+.venv\Scripts\python.exe devtools\selftest.py          # 逻辑自测 294 项（不需要连接设备）
 .venv\Scripts\python.exe devtools\check_theme.py       # 浅色/深色令牌完整性与残留检查
 .venv\Scripts\python.exe devtools\check_timing.py      # 时序/带宽公式 + 文本解析 + DCS 包构造
 .venv\Scripts\python.exe devtools\check_multidevice.py # 多设备 -s 注入（保证不会出现两个 -s）

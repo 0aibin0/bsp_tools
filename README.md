@@ -2,7 +2,7 @@
 
 > BSP / LCM 屏体调试工具集 —— PyQt5 单窗口桌面应用，把屏体调试要用的命令、计算和取证固化成一键操作。
 
-[![version](https://img.shields.io/badge/version-v3.2.23-2f6bff)](#版本与发版)
+[![version](https://img.shields.io/badge/version-v3.2.24-2f6bff)](#版本与发版)
 [![python](https://img.shields.io/badge/python-3.11-3776ab)](https://www.python.org/)
 [![pyqt5](https://img.shields.io/badge/PyQt5-5.15.10-41cd52)](https://pypi.org/project/PyQt5/)
 [![platform](https://img.shields.io/badge/platform-Windows%2010%2F11-0078d4)](#环境要求)
@@ -33,7 +33,7 @@
 | 常用 | **常用工具** | 9 个模块，LCM 调试主力页面（见下） |
 | 调试工具 | **Shell Tools** | adb / fastboot 设备控制：烧录、Download Mode、func 键、ylog、APK、投屏 |
 | 转换工具 | **Initcode Builder** | 6 种输入格式（WriteAddr / Write(Command) / Rxx / GEN_WR / `mipi.write` / `REGS.WRITE`）↔ initcode 字节序列（正反向），可输出 **QCOM 数组**并逐包校验 |
-| 转换工具 | **LK 转换** | 一页三个方向：LK → Kernel / Kernel → LK / LK → BAT，顶部单选切换 |
+| 转换工具 | **Initcode 格式转换** | 顶部单选切换：LK → Kernel / Kernel → LK / LK → BAT / UNISOC → QCOM |
 
 侧边栏底部常驻 **8 项快捷操作**：列出设备 / 抓现场包 / 获取 root / remount / 挂载 debugfs / 启动参数 / 截图并保存 / 重启设备。
 
@@ -168,6 +168,7 @@ bsp_tools/                      # 仓库根目录
 │  └─ dist/DisplayTools.exe     #   打包产物（仓库只保留最新一个，供自更新下载）
 ├─ devtools/                    # 开发自查脚本（check_*.py / verify_*.py / selftest.py / 截图）
 ├─ docs/                        # 设计与功能文档
+│  └─ analysis/                 #   历次改动分析（审计 / 格式 / 发版排查）
 ├─ requirements.txt             # 运行时依赖（只有 PyQt5）
 ├─ requirements-dev.txt         # 打包 / 设计器 / 图标依赖
 ├─ run_checks.py / run_checks.bat   # 一键自查入口
@@ -237,7 +238,7 @@ run_checks.bat device     # 再加上真机相关的 4 项（要连板子）
   失败则当前版本不动，避免半截 exe 换上去后新版本起不来。
 - 仓库若改为私有：在本机数据文件的 `config` 段加 `"update_token": "ghp_xxx"`。
 
-当前版本：**v3.2.23**
+当前版本：**v3.2.24**
 
 ---
 
@@ -250,6 +251,7 @@ run_checks.bat device     # 再加上真机相关的 4 项（要连板子）
 | [docs/功能清单.md](docs/功能清单.md) | 按页面组织的功能清单（给范围划分用） |
 | [docs/t820-lcm-porch-说明.md](docs/t820-lcm-porch-说明.md) | T820 LCM porch 算例说明 |
 | [UI 现代化设计说明](docs/superpowers/specs/2026-09-12-displaytools-v3.1-ui-modernization-and-tools-page.md) | v3.1 界面结构与新增功能的设计说明 |
+| [docs/analysis/](docs/analysis/) | 历次改动的分析文档：项目审计、DPI/布局、QCOM 格式、REGS.WRITE、CI、发版排查等 |
 
 ### 三条必须遵守的约定
 

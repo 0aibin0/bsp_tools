@@ -161,7 +161,7 @@ def current_mode():
 
 # 版本信息
 APP_NAME = "DisplayTools"
-APP_VERSION = "v3.2.21"
+APP_VERSION = "v3.2.22"
 APP_AUTHOR = "a1bin"
 
 # ===== 尺寸 =====

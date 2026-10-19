@@ -522,6 +522,121 @@ def validate_qcom_array(values):
     return packets, problems
 
 
+# =====================================================================
+# REGS.WRITE(addr, dtype, payload...) —— 一字板调试脚本里的写法
+#
+#   REGS.WRITE(0,0x39,0x03,0x01)        // addr, 块类型, 负载…
+#
+# 第一个参数是寄存器/通道号（一般是 0），**不进 initcode**；
+# 第二个是块类型（0x39 长包写等），当包头原样保留；其余是负载，
+# 负载第一个字节是 DCS 命令、剩下是参数——和 mipi.write 是一回事。
+#
+# 一条语句从 `REGS.WRITE(` 到配对的 `)` 结束，**允许跨行**：
+# DSC PPS 那种一百多字节的长行贴进来一定会被折行，甚至把 `0x2A`
+# 拆成 `0x2` + 换行 + `A`，所以参数切分前要把空白全部去掉。
+# =====================================================================
+
+_REGS_WRITE_RE = re.compile(
+    r"^\s*REGS\s*\.\s*WRITE\s*\(", re.IGNORECASE | re.MULTILINE)
+
+
+def _regs_tokens(body):
+    """把括号里的参数切成字符串 token。
+
+    先去掉所有空白再按逗号切：折行（包括把 `0x2A` 拆成 `0x2`+换行+`A`）
+    会自动拼回去；没有逗号的写法退回按空白切。
+    """
+    compact = re.sub(r"\s+", "", body)
+    if "," in compact:
+        return [token for token in compact.split(",") if token]
+    return [token for token in body.split() if token]
+
+
+def parse_regs_write(text):
+    """把 `REGS.WRITE(addr,dtype,payload...)` 清单转成 initcode 条目。
+
+    只解析以 REGS.WRITE 开头的语句；注释、空行、别的日志一律丢弃。
+    语句可以跨行（长 PPS 必然被折行）。解析失败不抛异常，问题写进 .error。
+    """
+    result = ParseResult()
+    if not text or not text.strip():
+        return result
+
+    # 先按行去掉注释再拼回去：注释里的括号不该参与配对
+    joined = "\n".join(code for _lineno, code, _raw in _strip_comments(text))
+
+    problems = []
+    entries = []
+    index = 0
+    while True:
+        match = _REGS_WRITE_RE.search(joined, index)
+        if match is None:
+            break
+
+        start = match.end()                       # 指向 '(' 之后
+        depth = 1
+        pos = start
+        while pos < len(joined) and depth:
+            char = joined[pos]
+            if char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+            pos += 1
+        if depth:
+            problems.append(
+                "第 {} 条 REGS.WRITE 没有配对的 ')'，内容被截断了".format(
+                    len(entries) + 1))
+            break
+
+        body = joined[start:pos - 1]
+        lineno = joined.count("\n", 0, match.start()) + 1
+        raw = re.sub(r"\s+", " ", joined[match.start():pos]).strip()
+        if len(raw) > 60:
+            raw = raw[:57] + "…"
+        index = pos
+
+        tokens = _regs_tokens(body)
+        values = []
+        bad = None
+        for token in tokens:
+            try:
+                value = int(token, 16)
+            except ValueError:
+                bad = token
+                break
+            if not 0 <= value <= 0xFF:
+                bad = token
+                break
+            values.append(value)
+        if bad is not None:
+            problems.append(
+                "第 {} 行有非法参数 {}（要 0x00..0xff）".format(lineno, bad))
+            continue
+        if len(values) < 3:
+            problems.append(
+                "第 {} 行参数不足：需要 addr、块类型、至少 1 个负载字节".format(
+                    lineno))
+            continue
+
+        # values[0] 是寄存器/通道号，丢弃
+        header = values[1]
+        payload = values[2:]
+        if len(payload) > 0xFF:
+            problems.append(
+                "第 {} 行负载 {} 字节，超过长度字节上限 255".format(
+                    lineno, len(payload)))
+            continue
+
+        entries.append(InitcodeEntry(
+            kind_of(header), payload[0], payload[1:],
+            raw=raw, header=header))
+
+    result.extend(entries)
+    result.error = "\n".join(problems)
+    return result
+
+
 def describe_entry(index, entry):
     """一行可读说明：第 N 条 · 类型 · 命令 0x?? · 参数 m 个 · 原始行。"""
     kind, cmd, params = entry
@@ -580,6 +695,7 @@ class InitcodeBuilderPage(BaseToolPage, Ui_InitcodeBuilder):
         self.radioButton_3.clicked.connect(self.select_command)
         self.radioButton_4.clicked.connect(self.select_command)
         self.radioButton_5.clicked.connect(self.select_command)
+        self.radioButton_6.clicked.connect(self.select_command)
 
         # 反向解析区块（控件本体在 ui_initcode_builder.py 里创建）
         self._reverse_entries = []
@@ -737,6 +853,17 @@ class InitcodeBuilderPage(BaseToolPage, Ui_InitcodeBuilder):
                 "只解析以 mipi.write 开头的行；# 与 // 注释、空行、别的前缀"
                 "（含日志时间戳）一律丢弃。行首那个字节是块类型，原样保留")
             self.pushButton.clicked.connect(self.initcodebuilder_5)
+        elif self.radioButton_6.isChecked():
+            self.format_hint.setText("当前格式: REGS.WRITE")
+            self.textEdit.setPlaceholderText(
+                "Enter REGS.WRITE strings\n**********\n"
+                "REGS.WRITE(0,0x39,0x03,0x01)   // 块内注释会被忽略\n"
+                "REGS.WRITE(0,0x39,0x53,0x28)\n"
+                "REGS.WRITE(0,0x39,0x70,0x11,0x00,…)  // 长 PPS 折行也能认\n"
+                "**********\n"
+                "第一个参数是寄存器/通道号，不进 initcode；第二个是块类型，"
+                "作为包头原样保留。只解析 REGS.WRITE 开头的语句，其余自动丢弃")
+            self.pushButton.clicked.connect(self.initcodebuilder_6)
 
     def initcodebuilder_1(self):
         """处理 WriteAddr / WriteData 格式。
@@ -857,3 +984,29 @@ class InitcodeBuilderPage(BaseToolPage, Ui_InitcodeBuilder):
         else:
             self.format_hint.setText(
                 "当前格式: mipi.write · 已生成 {} 条 initcode".format(len(entries)))
+
+    def initcodebuilder_6(self):
+        """处理 REGS.WRITE 格式：一条语句 → 一条 initcode。
+
+        第一个参数（寄存器/通道号）丢弃；第二个是块类型，原样当包头——
+        和 mipi.write 一样，不能按负载长度重推，否则 0x29 会被改成 0x39。
+        语句可跨行（长 PPS 一定被折行），解析器内部已处理。
+        """
+        result = parse_regs_write(self.textEdit.toPlainText())
+        entries = list(result)
+        self.textEdit_2.setPlainText("\n".join(to_dcs(entry) for entry in entries))
+
+        if not entries:
+            first = result.error.splitlines()[0] if result.error else \
+                "没有以 REGS.WRITE 开头的语句（其余内容已丢弃）"
+            self.format_hint.setText("当前格式: REGS.WRITE · " + first)
+            return
+
+        if result.error:
+            problems = result.error.splitlines()
+            self.format_hint.setText(
+                "当前格式: REGS.WRITE · 已生成 {} 条，另有 {} 处问题：{}".format(
+                    len(entries), len(problems), problems[0]))
+        else:
+            self.format_hint.setText(
+                "当前格式: REGS.WRITE · 已生成 {} 条 initcode".format(len(entries)))

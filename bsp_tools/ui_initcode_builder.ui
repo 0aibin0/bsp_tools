@@ -65,7 +65,7 @@
          </property>
         </widget>
        </item>
-       <item row="8" column="0">
+       <item row="9" column="0">
         <spacer name="verticalSpacer">
          <property name="orientation">
           <enum>Qt::Vertical</enum>
@@ -142,6 +142,13 @@
         <widget class="QRadioButton" name="radioButton_5">
          <property name="text">
           <string>mipi.write</string>
+         </property>
+        </widget>
+       </item>
+       <item row="8" column="0">
+        <widget class="QRadioButton" name="radioButton_6">
+         <property name="text">
+          <string>REGS.WRITE</string>
          </property>
         </widget>
        </item>

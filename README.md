@@ -2,7 +2,7 @@
 
 > BSP / LCM 屏体调试工具集 —— PyQt5 单窗口桌面应用，把屏体调试要用的命令、计算和取证固化成一键操作。
 
-[![version](https://img.shields.io/badge/version-v3.2.21-2f6bff)](#版本与发版)
+[![version](https://img.shields.io/badge/version-v3.2.22-2f6bff)](#版本与发版)
 [![python](https://img.shields.io/badge/python-3.11-3776ab)](https://www.python.org/)
 [![pyqt5](https://img.shields.io/badge/PyQt5-5.15.10-41cd52)](https://pypi.org/project/PyQt5/)
 [![platform](https://img.shields.io/badge/platform-Windows%2010%2F11-0078d4)](#环境要求)
@@ -32,7 +32,7 @@
 | --- | --- | --- |
 | 常用 | **常用工具** | 9 个模块，LCM 调试主力页面（见下） |
 | 调试工具 | **Shell Tools** | adb / fastboot 设备控制：烧录、Download Mode、func 键、ylog、APK、投屏 |
-| 转换工具 | **Initcode Builder** | 寄存器读写描述 / `mipi.write` 命令 ↔ initcode 字节序列（正反向），可输出 **QCOM 数组**并逐包校验 |
+| 转换工具 | **Initcode Builder** | 6 种输入格式（WriteAddr / Write(Command) / Rxx / GEN_WR / `mipi.write` / `REGS.WRITE`）↔ initcode 字节序列（正反向），可输出 **QCOM 数组**并逐包校验 |
 | 转换工具 | **LK → Kernel** | LK 十六进制序列 → 内核格式 |
 | 转换工具 | **Kernel → LK** | 内核十六进制序列 → LK 格式 |
 | 转换工具 | **LK → BAT** | 生成 DCS 写入批处理脚本 |
@@ -239,7 +239,7 @@ run_checks.bat device     # 再加上真机相关的 4 项（要连板子）
   失败则当前版本不动，避免半截 exe 换上去后新版本起不来。
 - 仓库若改为私有：在本机数据文件的 `config` 段加 `"update_token": "ghp_xxx"`。
 
-当前版本：**v3.2.21**
+当前版本：**v3.2.22**
 
 ---
 

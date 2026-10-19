@@ -115,6 +115,27 @@ MIPI_SAMPLE = "\n".join([
 MIPI_EXPECTED_FIRST = "0x39,0x00,0x00,0x07,0xd7,0x10,0x0c,0x36,0x19,0x90,0x90,"
 MIPI_EXPECTED_GENERIC = "0x29,0x00,0x00,0x03,0x75,0x03,0x04,"
 
+# REGS.WRITE 样本（一字板调试脚本写法）。最后一条是 DSC PPS，很长，贴进来会被
+# 折行、甚至把 0x2A 拆成 "0x2" + 换行 + "A" —— 解析器要把它们拼回去。
+REGS_SAMPLE = "\n".join([
+    "REGS.WRITE(0,0x39,0x03,0x01) //01：VESA ON； 00：VESA OFF",
+    "REGS.WRITE(0,0x39,0x35,0x00) //TE ON",
+    "REGS.WRITE(0,0x39,0x51,0x00,0x00)",
+    "REGS.WRITE(0,0x39,0x53,0x28) //20：关DBV dimming；28：开启DBV dimming",
+    "REGS.WRITE(0,0x39,0x59,0x09)",
+    "REGS.WRITE(0,0x39,0x6C,0x00) //帧率对应120:90:60<00:01:02>",
+    "REGS.WRITE(0,0x39,0x6F,0x01) //01：VIDEO MODE；",
+    "REGS.WRITE(0,0x39,0x70,0x11,0x00,0x00,0x89,0x30,0x80,0x09,0x84,0x04,0x38,0x00,"
+    "0x0C,0x02,0x1C,0x02,0x1C,0x02,",
+    "0x00,0x02,0x0E,0x00,0x20,0x01,0x1F,0x00,0x07,0x00,0x0C,0x08,0xBB,0x08,0x7A,"
+    "0x18,0x00,0x10,0xF0,0x03,0x0C,0x20,",
+    "0x00,0x06,0x0B,0x0B,0x33,0x0E,0x1C,0x2A,0x38,0x46,0x54,0x62,0x69,0x70,0x77,"
+    "0x79,0x7B,0x7D,0x7E,0x01,0x02,0x01",
+    ",0x00,0x09,0x40,0x09,0xBE,0x19,0xFC,0x19,0xFA,0x19,0xF8,0x1A,0x38,0x1A,0x78,"
+    "0x1A,0xB6,0x2A,0xB6,0x2A,0xF4,0x2",
+    "A,0xF4,0x4B,0x34,0x63,0x74,0x00,0x00,0x00,0x00,0x00,0x00)",
+])
+
 
 def run_forward(page, index, text):
     """把 text 喂给正向的第 index 号格式，返回生成的 initcode 文本。"""
@@ -478,6 +499,60 @@ def main():
     check("界面：末尾多 3 字节时报第 4 包不完整",
           "第 4 包" in page.reverse_list.toPlainText(),
           page.reverse_list.toPlainText())
+
+    print("\n[16] REGS.WRITE 格式：一字板脚本 → initcode（含折行 PPS）")
+    regs = icb.parse_regs_write(REGS_SAMPLE)
+    check("REGS.WRITE：解析出 8 条且无错误",
+          len(regs) == 8 and regs.ok, "{} / {}".format(len(regs), regs.error))
+    check("REGS.WRITE：首条 header 0x39 / cmd 0x03 / 参数 [0x01]",
+          regs[0].header == 0x39 and regs[0].cmd == 0x03
+          and regs[0].params == [0x01], str(tuple(regs[0])))
+    check("REGS.WRITE：首条字节行与手算一致",
+          to_dcs(regs[0]) == "0x39,0x00,0x00,0x02,0x03,0x01,",
+          to_dcs(regs[0]))
+    check("REGS.WRITE：0x53 那条参数为 [0x28]",
+          regs[3].cmd == 0x53 and regs[3].params == [0x28], str(tuple(regs[3])))
+
+    pps = regs[7]
+    check("REGS.WRITE：PPS 是 0x39/0x70、负载 95 字节",
+          pps.header == 0x39 and pps.cmd == 0x70
+          and 1 + len(pps.params) == 95,
+          "{} / {}".format(hex(pps.cmd), 1 + len(pps.params)))
+    check("REGS.WRITE：折行把 0x2A 拆成 0x2+A 也能拼回",
+          ([pps.cmd] + pps.params).count(0x2A) == 4,
+          str(([pps.cmd] + pps.params).count(0x2A)))
+    check("REGS.WRITE：PPS 末尾 6 个 0x00",
+          ([pps.cmd] + pps.params)[-6:] == [0] * 6,
+          str(([pps.cmd] + pps.params)[-6:]))
+    check("REGS.WRITE：注释没被吃进 raw",
+          all("VESA" not in entry.raw and "dimming" not in entry.raw
+              for entry in regs), regs[0].raw)
+
+    check("REGS.WRITE：第一个参数（通道号）被忽略",
+          icb.parse_regs_write("REGS.WRITE(7,0x39,0x03,0x01)")[0].cmd == 0x03)
+    check("REGS.WRITE：非 REGS.WRITE 行被丢弃",
+          len(icb.parse_regs_write(
+              "junk 0x11\n0x39,0x03\nREGS.WRITE(0,0x39,0x51)\n")) == 1)
+
+    short = icb.parse_regs_write("REGS.WRITE(0,0x39)\n")
+    check("REGS.WRITE：参数不足报错", bool(short.error) and len(short) == 0,
+          short.error)
+    unclosed = icb.parse_regs_write("REGS.WRITE(0,0x39,0x03\n0x39,0x01\n")
+    check("REGS.WRITE：缺少 ')' 报错", bool(unclosed.error), unclosed.error)
+    bad_hex = icb.parse_regs_write("REGS.WRITE(0,0x39,0xGG)\n")
+    check("REGS.WRITE：非十六进制参数报错", bool(bad_hex.error), bad_hex.error)
+    check("REGS.WRITE：空输入不报错", icb.parse_regs_write("").error == "")
+
+    page.radioButton_6.setChecked(True)
+    page.select_command()
+    page.textEdit.setPlainText(REGS_SAMPLE)
+    page.initcodebuilder_6()
+    ui_regs = [line for line in page.textEdit_2.toPlainText().split("\n") if line]
+    check("界面：REGS.WRITE 生成 8 行", len(ui_regs) == 8, str(len(ui_regs)))
+    check("界面：首行与纯函数一致",
+          ui_regs[0] == "0x39,0x00,0x00,0x02,0x03,0x01,", ui_regs[0])
+    check("界面：格式提示报出条数", "8" in page.format_hint.text(),
+          page.format_hint.text())
 
     page.close()
     app.processEvents()

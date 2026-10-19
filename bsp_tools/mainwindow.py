@@ -31,9 +31,7 @@ import update_check
 from sidebar import Sidebar
 
 from initcode_builder import InitcodeBuilderPage
-from lk_to_kernel import LkToKernelPage
-from kernel_to_lk import KernelToLkPage
-from lk_to_bat import LkToBatPage
+from transform_tools import TransformPage
 from shell_tools import ShellToolsPage
 from tools_page import CommonToolsPage
 
@@ -46,12 +44,10 @@ PAGE_DEFS = [
      ShellToolsPage, "调试工具", "terminal"),
     ("initcode", "Initcode Builder", "把寄存器读写描述转换成 initcode",
      InitcodeBuilderPage, "转换工具", "code"),
-    ("lk2kernel", "LK → Kernel", "LK 十六进制序列转内核格式",
-     LkToKernelPage, "转换工具", "arrow_right"),
-    ("kernel2lk", "Kernel → LK", "内核十六进制序列转 LK 格式",
-     KernelToLkPage, "转换工具", "arrow_left"),
-    ("lk2bat", "LK → BAT", "生成 DCS 写入批处理脚本",
-     LkToBatPage, "转换工具", "bat"),
+    # LK→Kernel / Kernel→LK / LK→BAT 合并成一页：三者界面结构完全相同，
+    # 各占一行把侧边栏撑得很长。方向在页面顶部切换。
+    ("transform", "LK 转换", "LK ↔ Kernel 互转 · LK → BAT 批处理",
+     TransformPage, "转换工具", "arrow_right"),
 ]
 
 # 命令面板的可选命令清单已并入 command_store（与「常用工具 · 命令收藏」
@@ -505,9 +501,7 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("Ctrl+1"), self, lambda: self.nav.select("tools"))
         QShortcut(QKeySequence("Ctrl+2"), self, lambda: self.nav.select("shell"))
         QShortcut(QKeySequence("Ctrl+3"), self, lambda: self.nav.select("initcode"))
-        QShortcut(QKeySequence("Ctrl+4"), self, lambda: self.nav.select("lk2kernel"))
-        QShortcut(QKeySequence("Ctrl+5"), self, lambda: self.nav.select("kernel2lk"))
-        QShortcut(QKeySequence("Ctrl+6"), self, lambda: self.nav.select("lk2bat"))
+        QShortcut(QKeySequence("Ctrl+4"), self, lambda: self.nav.select("transform"))
 
     def _start_clock(self):
         self.timer = QTimer(self)
@@ -640,7 +634,28 @@ class MainWindow(QMainWindow):
 
     def show_changelog(self):
         self._info_box("更新日志",
-                       "v3.2.22 (当前)\n"
+                       "v3.2.23 (当前)\n"
+                       "  - 转换工具：LK → Kernel / Kernel → LK / LK → BAT 三个页面合并成\n"
+                       "    一页「LK 转换」。三者界面结构本来完全一样（左输入右输出 +\n"
+                       "    Convert/Clear/Copy），各占一行把侧边栏撑得很长；现在顶部一排\n"
+                       "    「转换方向」单选切换，三个转换函数原样保留。侧边栏从 6 页\n"
+                       "    降到 4 页，快捷键收敛为 Ctrl+1~4。\n"
+                       "  - Initcode Builder 新增 REGS.WRITE 输入格式（见下）：\n"
+                       "    REGS.WRITE(0,0x39,0x03,0x01) 直接转 initcode，支持跨行语句、\n"
+                       "    折行把 0x2A 劈成「0x2」+「A」也能拼回。\n"
+                       "  - 块类型统一口径：负载 1 字节 → 0x05、2 字节 → 0x15、3 字节及\n"
+                       "    以上 → 0x39（含 DCS 命令字节）。六种输入格式与 QCOM 输出一致。\n"
+                       "  - QCOM 数组按真实面板配置修正：\n"
+                       "      · 第 4 字节是 post_wait_ms（例如 sleep out 35ms、display on\n"
+                       "        20ms），以前被写死成 0，初始化时序会丢等待；\n"
+                       "      · last 标志原样保留（QCOM 语义里每包通常都是 1）；\n"
+                       "      · dtype 保留原始值——真实配置里 05 可以配 2 字节负载、29 可以\n"
+                       "        配 5 字节负载，按长度重推会改掉面板原值。\n"
+                       "    用真实 mdss-dsi-on-command 验证：10 包往返逐字节一致。\n"
+                       "  - 「校验 QCOM」现在通过后会列出每包 dtype / 命令 / 参数个数 /\n"
+                       "    等待时间，切到「QCOM 数组」即可原样还原。\n"
+                       "  - check_initcode 111 → 140 项；selftest 279 → 287 项。\n\n"
+                       "v3.2.22 (2026-10-19)\n"
                        "  - Initcode Builder 新增第 6 种输入格式 REGS.WRITE：一字板调试\n"
                        "    脚本里 REGS.WRITE(0,0x39,0x03,0x01) 这种写法可以直接粘进来。\n"
                        "    第一个参数（寄存器/通道号）丢弃，第二个是块类型、当包头原样\n"

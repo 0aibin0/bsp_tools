@@ -79,15 +79,22 @@ class InitcodeEntry(tuple):
     故意继承 tuple，这样 parse_initcode 的返回值严格就是
     [(kind, cmd, params), ...]，可以 `for kind, cmd, params in ...` 直接拆；
     界面想显示「原始行 / 包头」时再用 entry.raw、entry.header。
+
+    wait：QCOM 包里的 post_wait_ms（包后等待毫秒）。initcode 字节本身不携带
+    这个信息，只有从 QCOM 数组解析出来的条目才会带值，默认 0。
+    last：QCOM 包里的 last 标志。从 QCOM 解析时保留原值（通常是 1），
+    其它来源默认 None（生成时按「是否最后一包」决定）。
     """
 
-    def __new__(cls, kind, cmd, params, raw="", header=0):
+    def __new__(cls, kind, cmd, params, raw="", header=0, wait=0, last=None):
         self = super(InitcodeEntry, cls).__new__(cls, (kind, cmd, list(params)))
         self.kind = kind
         self.cmd = cmd
         self.params = list(params)
         self.raw = raw
         self.header = header
+        self.wait = int(wait or 0) & 0xff
+        self.last = last
         return self
 
 
@@ -187,17 +194,39 @@ def _byte_text(value):
     return "0x{:02x}".format(number)
 
 
+def block_header(payload_count):
+    """按负载字节数选块类型（**全项目唯一口径**）。
+
+        负载 1 字节        → 0x05（DCS short write, no parameter）
+        负载 2 字节        → 0x15（DCS short write, 1 parameter）
+        负载 3 字节及以上  → 0x39（DCS long write）
+
+    这里的「负载」包含 DCS 命令字节本身：REGS.WRITE(0,0x39,0x03) 的负载只有
+    命令 0x03 一个字节，因此是 0x05；再带一个参数才是 0x15。
+
+    所有输入格式（WriteAddr / Write(Command) / Rxx / GEN_WR / mipi.write /
+    REGS.WRITE）和 QCOM 数组的 dtype 都走这里，保证输出一致。
+    """
+    count = int(payload_count)
+    if count <= 1:
+        return 0x05
+    if count == 2:
+        return 0x15
+    return 0x39
+
+
+def header_filler(payload_count):
+    """包头后面两个填充字节：沿用老规矩（1 字节负载写 0x78,0x00，其余 0x00,0x00）。"""
+    return (0x78, 0x00) if int(payload_count) <= 1 else (0x00, 0x00)
+
+
 def _initcode_row(command, params):
-    """「DCS 命令 + 参数」→ 一行 initcode 字节。正向 4 种格式共用。"""
+    """「DCS 命令 + 参数」→ 一行 initcode 字节。正向各种格式共用。"""
     payload = [command] + list(params)
     count = len(payload)
-    if count <= 1:
-        prefix = "0x05,0x78,0x00"
-    elif count == 2:
-        prefix = "0x15,0x00,0x00"
-    else:
-        prefix = "0x39,0x00,0x00"
-    return ",".join([prefix, "0x{:02x}".format(count)] + payload) + ","
+    prefix = [block_header(count)] + list(header_filler(count))
+    return ",".join(["{}".format(",".join("0x{:02x}".format(v) for v in prefix)),
+                     "0x{:02x}".format(count)] + payload) + ","
 
 
 def _instruction_re(names):
@@ -399,18 +428,14 @@ def to_dcs(entry):
     写法与正向生成完全一致（逗号分隔、小写两位十六进制、行尾带逗号）：
         0x39,0x00,0x00,0x05,0x1a,0x2b,0x3c,0x4d,0x5e,
 
-    块类型优先用条目自己带的 header：mipi.write 里的 0x29（Generic long write）
-    和 0x39（DCS long write）负载长度可能完全一样，按长度重推会把 0x29 悄悄
-    改写成 0x39，下发到屏体的行为可能不同。只有拿不到 header（例如直接传
-    三元组）时才退回按负载长度推断。
+    块类型**按负载字节数统一决定**（见 block_header）：1 → 0x05、2 → 0x15、
+    ≥3 → 0x39。原始输入里写的块类型（例如 mipi.write / REGS.WRITE 里的
+    0x29）不再透传，一律按这条规则重新推导——这是项目约定，输出口径唯一，
+    不会被输入写法带偏。
     """
     payload = [entry[1]] + list(entry[2])
     count = len(payload)
-    header = getattr(entry, "header", 0) or 0
-    if not header:
-        header = 0x05 if count <= 1 else (0x15 if count == 2 else 0x39)
-    # 包头后两个字节只是填充：沿用正向生成的老规矩（1 字节负载写 0x78,0x00）
-    values = [header, 0x78 if count <= 1 else 0x00, 0x00, count] + payload
+    values = [block_header(count)] + list(header_filler(count)) + [count] + payload
     return ",".join("0x{:02x}".format(int(value) & 0xff) for value in values) + ","
 
 
@@ -450,29 +475,48 @@ def format_as(entries, style=STYLE_BYTE):
 # =====================================================================
 # QCOM DSI 命令数组（qcom,mdss-dsi-on-command / -off-command）
 #
-# 每个包的字节布局（7 字节包头 + 负载）：
-#   [0] dtype        —— DCS 数据类型，即 initcode 的块类型（0x05/0x15/0x39/0x29…）
-#   [1] last         —— 是否命令集里的最后一包（1 = 是）
+# 每个包 = 7 字节包头 + 负载，**包长必须正好 = 7 + tx_len**：
+#   [0] dtype        —— 数据类型：0x05 短写 / 0x15 单参数短写 / 0x39 长写 / 0x29 通用长写
+#   [1] last         —— 是否命令集最后一包（QCOM 里通常是 1）
 #   [2] vc           —— 虚拟通道，一般 0
 #   [3] ack          —— 一般 0
-#   [4] post_wait_ms —— 包后等待毫秒，一般 0
+#   [4] post_wait_ms —— **包后等待毫秒**（0x23 = 35ms、0x14 = 20ms 这类）
 #   [5..6] tx_len    —— 负载长度，**大端**（高字节在前）
-#   [7..]  payload   —— 负载（命令 + 参数）
+#   [7..]  payload   —— 负载（首字节 DCS 命令 + 参数）
 #
-# 踩过的坑：包长必须正好 = 7 + tx_len。多余字节在数组**末尾**会被静默丢弃
-# （不报错），在**中间**会让后续包全部错位 → dsi_panel_get_cmd_pkt_count()
-# 返回 -22 → 整条命令集一条都不下发。
+# 参考真实面板配置：
+#   15 01 00 00 00 00 02 FE 00                 → dtype 15, wait 0,  tx_len 2
+#   05 01 00 00 23 00 02 11 00                 → dtype 05, wait 35, tx_len 2
+#
+# 踩过的坑：包长对不上时，多余字节在数组**末尾**会被静默丢弃（不报错），
+# 在**中间**会让后续包全部错位 → dsi_panel_get_cmd_pkt_count() 返回 -22
+# → 整条命令集一条都不下发。
 # =====================================================================
 
 QCOM_HEADER = 7
+QCOM_DEFAULT_WAIT = 0
 
 
 def qcom_packet(entry, last=0):
-    """一条 initcode 条目 → 一个 QCOM 包（字节列表）。"""
+    """一条 initcode 条目 → 一个 QCOM 包（字节列表）。
+
+    **dtype 优先用条目自带的原始包头**：真实面板配置里，同一个负载长度
+    可能配不同的 dtype（例如 `05 01 … 02 11 00` 是 2 字节负载配 0x05 的
+    "write, no param" 语义，而 `29 01 … 05 2A …` 是 5 字节负载配 0x29 的
+    Generic long write）。QCOM 是直接给驱动吃的，必须忠于面板原配置，
+    所以从 QCOM 解析来的条目原样写回；只有拿不到原始包头（例如从
+    mipi.write / REGS.WRITE 转过来）时才按 `block_header()` 推。
+
+    post_wait_ms 取条目自带的 wait（解析 QCOM 时保留，其它来源默认 0）。
+    last 优先用条目自带的原值（从 QCOM 解析来的通常都是 1），否则按位置判断。
+    """
     payload = [entry[1]] + list(entry[2])
-    header = getattr(entry, "header", 0) or 0x39
     length = len(payload)
-    return [header & 0xff, 1 if last else 0, 0x00, 0x00, 0x00,
+    wait = getattr(entry, "wait", QCOM_DEFAULT_WAIT) or 0
+    keep_last = getattr(entry, "last", None)
+    flag = (1 if keep_last else 0) if keep_last is not None else (1 if last else 0)
+    dtype = getattr(entry, "header", 0) or block_header(length)
+    return [dtype & 0xff, flag, 0x00, 0x00, wait & 0xff,
             (length >> 8) & 0xff, length & 0xff] + [v & 0xff for v in payload]
 
 
@@ -494,32 +538,73 @@ def parse_qcom_text(text):
     return values
 
 
-def validate_qcom_array(values):
-    """逐包校验 QCOM 数组，返回 (包数, 问题列表)。
+def split_qcom_packets(values):
+    """把字节列表按「7 字节头 + tx_len」切成一个个包。
 
-    空问题列表 = 每包都满足「总长 = 7 + tx_len」。
+    返回 [(包头 7 字节, 负载), ...] 和问题列表。长度对不上的包不返回，
+    问题写进第二个返回值（这样界面能指出第几包差几个字节）。
     """
+    packets = []
     problems = []
     index = 0
     total = len(values)
-    packets = 0
     while index < total:
         remain = total - index
         if remain < QCOM_HEADER:
             problems.append(
                 "第 {} 包只剩 {} 字节，凑不满 {} 字节包头".format(
-                    packets + 1, remain, QCOM_HEADER))
+                    len(packets) + 1, remain, QCOM_HEADER))
             break
-        length = (values[index + 5] << 8) | values[index + 6]
+        head = list(values[index:index + QCOM_HEADER])
+        length = (head[5] << 8) | head[6]
         need = QCOM_HEADER + length
-        packets += 1
         if need > remain:
             problems.append(
                 "第 {} 包声明 tx_len={}（整包应为 {} 字节），实际只剩 {} 字节，"
-                "差 {} 字节".format(packets, length, need, remain, need - remain))
+                "差 {} 字节".format(
+                    len(packets) + 1, length, need, remain, need - remain))
             break
+        packets.append((head, list(values[index + QCOM_HEADER:index + need])))
         index += need
     return packets, problems
+
+
+def parse_qcom_array(text):
+    """把 QCOM DTS 数组转成 initcode 条目（**保留 post_wait_ms**）。
+
+    真实面板配置长这样（一个包一行）：
+
+        15 01 00 00 00 00 02 FE 00
+        05 01 00 00 23 00 02 11 00     ← 第 4 字节 0x23 = 35ms 等待
+
+    解析后 dtype 记进 entry.header（原始包类型），post_wait 记进 entry.wait。
+    输出 initcode 时包头统一按长度重推（见 block_header），但 wait 会原样保留，
+    再输出成 QCOM 时不会丢。
+    """
+    result = ParseResult()
+    values = parse_qcom_text(text)
+    if not values:
+        return result
+    packets, problems = split_qcom_packets(values)
+    for head, payload in packets:
+        if not payload:
+            problems.append("有一包 tx_len=0，没有 DCS 命令，已跳过")
+            continue
+        result.append(InitcodeEntry(
+            kind_of(head[0]), payload[0], payload[1:],
+            raw=" ".join("{:02X}".format(v) for v in head + payload),
+            header=head[0], wait=head[4], last=head[1]))
+    result.error = "\n".join(problems)
+    return result
+
+
+def validate_qcom_array(values):
+    """逐包校验 QCOM 数组，返回 (包数, 问题列表)。
+
+    空问题列表 = 每包都满足「总长 = 7 + tx_len」。
+    """
+    packets, problems = split_qcom_packets(values)
+    return len(packets), problems
 
 
 # =====================================================================
@@ -528,7 +613,9 @@ def validate_qcom_array(values):
 #   REGS.WRITE(0,0x39,0x03,0x01)        // addr, 块类型, 负载…
 #
 # 第一个参数是寄存器/通道号（一般是 0），**不进 initcode**；
-# 第二个是块类型（0x39 长包写等），当包头原样保留；其余是负载，
+# 第二个是原包类型（0x39 长包写等）——**只作为参考，不直接抄进输出**：
+# 输出包头统一按负载字节数重推（见 block_header；1→0x05 / 2→0x15 / ≥3→0x39），
+# 这样六种输入格式的产品口径完全一致。其余字节是负载，
 # 负载第一个字节是 DCS 命令、剩下是参数——和 mipi.write 是一回事。
 #
 # 一条语句从 `REGS.WRITE(` 到配对的 `)` 结束，**允许跨行**：
@@ -768,7 +855,11 @@ class InitcodeBuilderPage(BaseToolPage, Ui_InitcodeBuilder):
         self.copy_to_clipboard(self.reverse_output)
 
     def on_validate_qcom(self):
-        """把输入当作 QCOM DSI 命令数组逐包校验（包长必须 = 7 + tx_len）。"""
+        """把输入当作 QCOM DSI 命令数组逐包校验（包长必须 = 7 + tx_len）。
+
+        校验通过时顺手把包解析成条目放进 `self._reverse_entries`，
+        这样切到「QCOM 数组」输出格式再生成，能原样还原（含 post_wait）。
+        """
         values = parse_qcom_text(self.reverse_input.toPlainText())
         if not values:
             self.reverse_list.setPlainText("没有读到字节：先粘贴 QCOM 数组")
@@ -776,6 +867,20 @@ class InitcodeBuilderPage(BaseToolPage, Ui_InitcodeBuilder):
             return (0, [])
 
         packets, problems = validate_qcom_array(values)
+        lines = []
+        if not problems:
+            entries = parse_qcom_array(self.reverse_input.toPlainText())
+            self._reverse_entries = list(entries)
+            for index, entry in enumerate(entries, 1):
+                wait = getattr(entry, "wait", 0)
+                lines.append(
+                    "第 {} 包 · dtype 0x{:02x} · 命令 0x{:02x} · 参数 {} 个"
+                    "{}".format(
+                        index, getattr(entry, "header", 0) or 0,
+                        int(entry[1]) & 0xff, len(entry[2]),
+                        " · 等待 {} ms".format(wait) if wait else ""))
+            self._render_reverse_output()
+
         if problems:
             self.reverse_list.setPlainText(
                 "共 {} 字节，识别 {} 包，发现 {} 处问题：\n{}".format(
@@ -785,8 +890,8 @@ class InitcodeBuilderPage(BaseToolPage, Ui_InitcodeBuilder):
                 "warn")
         else:
             self.reverse_list.setPlainText(
-                "共 {} 字节，{} 包，逐包对齐（每包 = 7 + tx_len），没有发现问题。"
-                .format(len(values), packets))
+                "共 {} 字节，{} 包，逐包对齐（每包 = 7 + tx_len），没有发现问题。\n"
+                "{}".format(len(values), packets, "\n".join(lines)))
             self._set_reverse_status(
                 "QCOM 数组对齐正常（{} 包）".format(packets), "ok")
         return packets, problems
@@ -851,7 +956,8 @@ class InitcodeBuilderPage(BaseToolPage, Ui_InitcodeBuilder):
                 "mipi.write 0x39 0xD7 0x10 0x0C 0x36 0x19 0x90 0x90\n"
                 "mipi.write 0x29 0x75 0x03 0x04\n**********\n"
                 "只解析以 mipi.write 开头的行；# 与 // 注释、空行、别的前缀"
-                "（含日志时间戳）一律丢弃。行首那个字节是块类型，原样保留")
+                "（含日志时间戳）一律丢弃。输出包头按负载字节数重推："
+                "1→0x05、2→0x15、≥3→0x39")
             self.pushButton.clicked.connect(self.initcodebuilder_5)
         elif self.radioButton_6.isChecked():
             self.format_hint.setText("当前格式: REGS.WRITE")
@@ -861,8 +967,9 @@ class InitcodeBuilderPage(BaseToolPage, Ui_InitcodeBuilder):
                 "REGS.WRITE(0,0x39,0x53,0x28)\n"
                 "REGS.WRITE(0,0x39,0x70,0x11,0x00,…)  // 长 PPS 折行也能认\n"
                 "**********\n"
-                "第一个参数是寄存器/通道号，不进 initcode；第二个是块类型，"
-                "作为包头原样保留。只解析 REGS.WRITE 开头的语句，其余自动丢弃")
+                "第一个参数是寄存器/通道号，不进 initcode；第二个是原包类型"
+                "（只作参考）。输出包头按负载字节数重推：1→0x05、2→0x15、"
+                "≥3→0x39。只解析 REGS.WRITE 开头的语句，其余自动丢弃")
             self.pushButton.clicked.connect(self.initcodebuilder_6)
 
     def initcodebuilder_1(self):
@@ -962,8 +1069,9 @@ class InitcodeBuilderPage(BaseToolPage, Ui_InitcodeBuilder):
     def initcodebuilder_5(self):
         """处理 mipi.write 格式：一行一条命令 → 一条 initcode。
 
-        行首的块类型原样保留（0x39 / 0x29 / 0x05 / 0x15 …），不按负载长度重推：
-        0x29 和 0x39 的负载长度可能一样，但包语义不同，重推会改掉下发行为。
+        行首那个字节是**原始包类型**，只用来切出负载，**不抄进输出**：
+        输出包头统一按负载字节数重推（1→0x05 / 2→0x15 / ≥3→0x39），
+        保证和另外五种输入格式的产物口径一致。
         有问题的行不会静默丢掉——条数照样生成，问题写在格式提示里。
         """
         result = parse_mipi_write(self.textEdit.toPlainText())
@@ -988,8 +1096,8 @@ class InitcodeBuilderPage(BaseToolPage, Ui_InitcodeBuilder):
     def initcodebuilder_6(self):
         """处理 REGS.WRITE 格式：一条语句 → 一条 initcode。
 
-        第一个参数（寄存器/通道号）丢弃；第二个是块类型，原样当包头——
-        和 mipi.write 一样，不能按负载长度重推，否则 0x29 会被改成 0x39。
+        第一个参数（寄存器/通道号）丢弃；第二个是原包类型，只作参考，
+        **不抄进输出**——包头统一按负载字节数重推（1→0x05 / 2→0x15 / ≥3→0x39）。
         语句可跨行（长 PPS 一定被折行），解析器内部已处理。
         """
         result = parse_regs_write(self.textEdit.toPlainText())

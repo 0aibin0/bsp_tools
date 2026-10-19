@@ -157,8 +157,9 @@ class Ui_InitcodeBuilder(object):
             "校验 QCOM", parent=self.reverse_card)
         self.pushButton_qcom_check.setObjectName("pushButton_qcom_check")
         self.pushButton_qcom_check.setToolTip(
-            "把上面的输入当作 qcom,mdss-dsi-on-command 数组，逐包检查"
-            "「包长 = 7 + tx_len」是否对齐（错位的后果是 rc=-22、命令一条都不下发）")
+            "把上面的输入当作 qcom,mdss-dsi-on-command 数组：逐包检查"
+            "「包长 = 7 + tx_len」是否对齐（错位的后果是 rc=-22、命令一条都不下发），"
+            "通过后可直接用「QCOM 数组」格式还原（含 post_wait 等待时间）")
         control_row.addWidget(self.pushButton_qcom_check)
         self.pushButton_reverse_copy = ui_widgets.soft_button("复制结果", parent=self.reverse_card)
         self.pushButton_reverse_copy.setObjectName("pushButton_reverse_copy")

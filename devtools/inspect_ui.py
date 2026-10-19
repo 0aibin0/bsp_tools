@@ -240,8 +240,7 @@ def main():
 
     total_bad = 0
     pages = [("shell", "Shell Tools"), ("tools", "常用工具"),
-             ("initcode", "Initcode Builder"), ("lk2kernel", "LK → Kernel"),
-             ("kernel2lk", "Kernel → LK"), ("lk2bat", "LK → BAT")]
+             ("initcode", "Initcode Builder"), ("transform", "LK 转换")]
 
     for key, label in pages:
         if target_page and target_page != key:

@@ -331,7 +331,7 @@ def main():
     fav.reload()
 
     print("\n[6] 主窗口导航与状态栏")
-    for key in ("tools", "shell", "initcode", "lk2kernel", "kernel2lk", "lk2bat"):
+    for key in ("tools", "shell", "initcode", "transform"):
         window.nav.select(key)
         app.processEvents()
         check(f"切换到 {key}", window.stack.currentWidget() is window.pages[key])
@@ -340,6 +340,53 @@ def main():
           window.deviceLabel.text())
     window.toast("自测提示", "success")
     check("浮层提示可显示", window._toast.isVisible())
+
+    print("\n[6b] 转换工具：三个方向合并成一页")
+    tr = window.pages["transform"]
+    check("三个旧页面已下线（只剩 transform）",
+          not any(k in window.pages for k in ("lk2kernel", "kernel2lk", "lk2bat")),
+          str(list(window.pages)))
+    check("侧边栏只有 4 个页面",
+          len(window.nav._buttons) == 4, str(list(window.nav._buttons)))
+
+    tr.select_direction("lk2kernel")
+    tr.textEdit.setPlainText("0x1a,0x2b,0x3c,0x4d\n0x5e,0x6f,")
+    tr.convert()
+    check("LK → Kernel：去 0x、逗号换空格",
+          tr.textEdit_2.toPlainText() == "1a 2b 3c 4d\n5e 6f",
+          tr.textEdit_2.toPlainText())
+
+    tr.select_direction("kernel2lk")
+    tr.textEdit.setPlainText("1a 2b 3c 4d\n5e 6f")
+    tr.convert()
+    check("Kernel → LK：加 0x、逗号分隔",
+          tr.textEdit_2.toPlainText() == "0x1a, 0x2b, 0x3c, 0x4d,\n0x5e, 0x6f,",
+          tr.textEdit_2.toPlainText())
+
+    tr.select_direction("lk2bat")
+    tr.textEdit.setPlainText("0x02,0x00,0x00,0x03,0x51,0x01,0x35,")
+    tr.convert()
+    bat = tr.textEdit_2.toPlainText()
+    check("LK → BAT：跳过前 4 字段后写 dcs 节点",
+          "0x51 0x01 0x35" in bat and "dsi0/dcs_write" in bat, bat)
+    check("LK → BAT：首行写 0x01 / 末行 pause",
+          bat.split("\n")[0].endswith('dcs_write"') and "0x01" in bat.split("\n")[0]
+          and bat.strip().endswith("pause"), bat)
+    check("当前方向是 BAT",
+          "LK → BAT" in tr.textEdit.parentWidget().title(),
+          tr.textEdit.parentWidget().title())
+
+    tr.select_direction("kernel2lk")
+    check("方向切换后标题跟着变",
+          "Kernel → LK" in tr.textEdit.parentWidget().title(),
+          tr.textEdit.parentWidget().title())
+    tr.textEdit.setPlainText("   ")
+    tr.select_direction("lk2kernel")
+    tr.convert()
+    check("空输入不崩", True)
+    tr.on_clear()
+    check("Clear 同时清空两侧",
+          tr.textEdit.toPlainText() == "" and tr.textEdit_2.toPlainText() == "")
 
     print("\n[7] 文件管理：列表渲染与选中")
     files = window.pages["tools"].sections["files"]

@@ -46,7 +46,7 @@ for size in SIZES:
         for _ in range(3):
             app.processEvents()
         pages.append(("tools." + key, tools.sections[key]))
-    for key in ("initcode", "lk2kernel", "kernel2lk", "lk2bat"):
+    for key in ("initcode", "transform"):
         pages.append((key, window.pages[key]))
     window.nav.select("tools")
     for _ in range(3):

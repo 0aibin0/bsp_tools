@@ -61,7 +61,7 @@ def main():
         shots.append(name)
         print("saved", name, flush=True)
 
-    for key in ("tools", "shell", "initcode", "lk2kernel", "kernel2lk", "lk2bat"):
+    for key in ("tools", "shell", "initcode", "transform"):
         window.nav.select(key)
         grab(f"page_{key}")
 

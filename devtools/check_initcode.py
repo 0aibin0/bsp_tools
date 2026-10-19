@@ -31,7 +31,8 @@ from PyQt5.QtWidgets import QApplication                     # noqa: E402
 import initcode_builder as icb                               # noqa: E402
 from initcode_builder import (KIND_LONG, KIND_SHORT,         # noqa: E402
                               KIND_SHORT_1P, parse_initcode, format_as,
-                              format_list, to_dcs, parse_mipi_write)
+                              format_list, to_dcs, parse_mipi_write,
+                              block_header)
 
 FAILURES = []
 CHECKS = [0]
@@ -74,9 +75,9 @@ EXPECTED_ENTRIES = [
 # 风格 → 正向第几号生成函数（byte 风格本身就是正向的输出格式）
 STYLE_TO_FORWARD = {"write": 2, "rxx": 3, "gen_wr": 4}
 
-# mipi.write 真实样本（T820 屏体点亮序列，10 条）。第 8 条用 0x29
-# （Generic long write），其余用 0x39（DCS long write）——这两者负载长度
-# 可能一样，必须原样保留，不能按长度重推。
+# mipi.write 真实样本（T820 屏体点亮序列，10 条）。第 8 条原文写的是 0x29
+# （Generic long write），但按项目约定「包头只由负载字节数决定」，输出一律
+# 重推为 0x39 / 0x15 / 0x05，原始块类型不透传。
 MIPI_SAMPLE = "\n".join([
     "mipi.write 0x39 0xD7 0x10 0x0C 0x36 0x19 0x90 0x90",
     "",
@@ -113,7 +114,41 @@ MIPI_SAMPLE = "\n".join([
 ])
 
 MIPI_EXPECTED_FIRST = "0x39,0x00,0x00,0x07,0xd7,0x10,0x0c,0x36,0x19,0x90,0x90,"
-MIPI_EXPECTED_GENERIC = "0x29,0x00,0x00,0x03,0x75,0x03,0x04,"
+MIPI_EXPECTED_GENERIC = "0x39,0x00,0x00,0x03,0x75,0x03,0x04,"
+
+# QCOM 真实面板配置（qcom,mdss-dsi-on-command）。注意 dtype 与负载长度并不
+# 一一对应：`05 … 02 11 00` 是 2 字节负载却用 0x05，`29 … 05 2A …` 是 5 字节
+# 负载却用 0x29。所以 QCOM 输出必须保留原 dtype，不能按长度重推。
+QCOM_REAL_TEXT = "\n".join([
+    "qcom,mdss-dsi-on-command = [",
+    "    15 01 00 00 00 00 02 FE 00",
+    "    15 01 00 00 00 00 02 35 02   // Variable TE",
+    "",
+    "    15 01 00 00 00 00 02 FE 00",
+    "    29 01 00 00 00 00 05 2A 00 00 02 15",
+    "    29 01 00 00 00 00 05 2B 00 00 02 15",
+    "",
+    "    15 01 00 00 00 00 02 FE 00",
+    "    15 01 00 00 00 00 02 53 20",
+    "    29 01 00 00 00 00 03 51 01 35   // 250 nit",
+    "",
+    "    05 01 00 00 23 00 02 11 00",
+    "    05 01 00 00 14 00 02 29 00",
+    "];",
+])
+
+QCOM_REAL_PACKETS = [
+    "0x15,0x01,0x00,0x00,0x00,0x00,0x02,0xfe,0x00,",
+    "0x15,0x01,0x00,0x00,0x00,0x00,0x02,0x35,0x02,",
+    "0x15,0x01,0x00,0x00,0x00,0x00,0x02,0xfe,0x00,",
+    "0x29,0x01,0x00,0x00,0x00,0x00,0x05,0x2a,0x00,0x00,0x02,0x15,",
+    "0x29,0x01,0x00,0x00,0x00,0x00,0x05,0x2b,0x00,0x00,0x02,0x15,",
+    "0x15,0x01,0x00,0x00,0x00,0x00,0x02,0xfe,0x00,",
+    "0x15,0x01,0x00,0x00,0x00,0x00,0x02,0x53,0x20,",
+    "0x29,0x01,0x00,0x00,0x00,0x00,0x03,0x51,0x01,0x35,",
+    "0x05,0x01,0x00,0x00,0x23,0x00,0x02,0x11,0x00,",
+    "0x05,0x01,0x00,0x00,0x14,0x00,0x02,0x29,0x00,",
+]
 
 # REGS.WRITE 样本（一字板调试脚本写法）。最后一条是 DSC PPS，很长，贴进来会被
 # 折行、甚至把 0x2A 拆成 "0x2" + 换行 + "A" —— 解析器要把它们拼回去。
@@ -332,12 +367,21 @@ def main():
           mipi[0].cmd == 0xD7 and
           list(mipi[0].params) == [0x10, 0x0C, 0x36, 0x19, 0x90, 0x90],
           str(tuple(mipi[0])))
-    check("真实样本：块类型 0x29 未被改写成 0x39",
-           mipi[7].header == 0x29 and mipi_lines[7] == MIPI_EXPECTED_GENERIC,
+    check("真实样本：原文 0x29 那条按长度重推为 0x39",
+          mipi[7].header == 0x29 and mipi_lines[7] == MIPI_EXPECTED_GENERIC,
           "{} / {}".format(hex(mipi[7].header), mipi_lines[7]))
-    check("真实样本：其余 9 条仍是 0x39",
-          [entry.header for i, entry in enumerate(mipi) if i != 7] == [0x39] * 9,
-          str([hex(entry.header) for entry in mipi]))
+    # 包头只由负载字节数决定：1 → 0x05、2 → 0x15、≥3 → 0x39
+    check("真实样本：全部 10 条包头都符合长度规则",
+          all(mipi_lines[i].split(",")[0] ==
+              ("0x05" if len(entry.params) + 1 <= 1 else
+               ("0x15" if len(entry.params) + 1 == 2 else "0x39"))
+              for i, entry in enumerate(mipi)),
+          str([mipi_lines[i].split(",")[0] for i in range(len(mipi))]))
+    check("真实样本：负载长度＝1＋参数个数",
+          all(len(entry.params) + 1 ==
+              int(mipi_lines[i].split(",")[3], 16)
+              for i, entry in enumerate(mipi)),
+          str([mipi_lines[i].split(",")[3] for i in range(len(mipi))]))
     check("真实样本：负载长度＝1＋参数个数",
           all(len(entry.params) + 1 ==
               int(mipi_lines[i].split(",")[3], 16)
@@ -349,11 +393,18 @@ def main():
     check("往返：反向解析无错误", mipi_round.ok, mipi_round.error)
     check("往返：条数一致", len(mipi_round) == len(mipi),
           "{} vs {}".format(len(mipi_round), len(mipi)))
-    check("往返：每条命令 / 参数 / 块类型都一致",
+    # 生成的字节行包头已按长度重推，所以往返后 header 与原始输入不同——
+    # 这里比对的是「命令 + 参数」一致，以及往返后的包头仍符合长度规则。
+    check("往返：每条命令 / 参数都一致",
           len(mipi_round) == len(mipi) and all(
-              (a.cmd, list(a.params), a.header) == (b.cmd, list(b.params), b.header)
+              (a.cmd, list(a.params)) == (b.cmd, list(b.params))
               for a, b in zip(mipi, mipi_round)),
           str([(hex(a.header), a.cmd) for a in mipi]))
+    check("往返：往返后的包头仍符合长度规则",
+          len(mipi_round) == len(mipi) and all(
+              b.header == block_header(len(b.params) + 1)
+              for b in mipi_round),
+          str([hex(b.header) for b in mipi_round]))
 
     print("\n[11] 行首过滤：只解析以 mipi.write 开头的行，其余全部丢弃")
     variants = parse_mipi_write(
@@ -465,9 +516,10 @@ def main():
     first = qcom_lines[0].rstrip(",").split(",")
     check("首包 = 7 字节头 + 5 字节负载", len(first) == 12, str(first))
     check("首包 dtype 沿用块类型 0x39", int(first[0], 16) == 0x39, first[0])
-    check("tx_len 是大端（高字节在前）",
+    check("tx_len 是大端（高字节在前，位于 [5][6]）",
           int(first[5], 16) == 0x00 and int(first[6], 16) == 0x05,
           "{} {}".format(first[5], first[6]))
+    check("post_wait_ms 在 [4]，默认 0", int(first[4], 16) == 0x00, first[4])
     last = qcom_lines[-1].rstrip(",").split(",")
     check("只有最后一包 last=1",
           int(first[1], 16) == 0 and int(last[1], 16) == 1,
@@ -500,15 +552,48 @@ def main():
           "第 4 包" in page.reverse_list.toPlainText(),
           page.reverse_list.toPlainText())
 
+    print("\n[15b] QCOM 真实面板配置：packet 布局 + 往返保真")
+    real = icb.parse_qcom_array(QCOM_REAL_TEXT)
+    check("真实配置：解析出 10 包且无错误",
+          len(real) == 10 and real.ok, "{} / {}".format(len(real), real.error))
+    check("真实配置：第 9 包 post_wait = 0x23（35ms）",
+          real[8].wait == 0x23, hex(real[8].wait))
+    check("真实配置：第 10 包 post_wait = 0x14（20ms）",
+          real[9].wait == 0x14, hex(real[9].wait))
+    check("真实配置：前 8 包 post_wait = 0",
+          all(e.wait == 0 for e in real[:8]),
+          str([e.wait for e in real[:8]]))
+    check("真实配置：last 标志保留为 1",
+          all(e.last == 1 for e in real), str([e.last for e in real]))
+
+    reborn = icb.format_qcom_array(real).split("\n")
+    check("真实配置：往返后 10 包逐字节一致",
+          reborn == QCOM_REAL_PACKETS, "\n".join(reborn[:2]))
+    check("真实配置：0x29 与 0x05 的 dtype 未被重推",
+          [int(l.split(",")[0], 16) for l in reborn]
+          == [0x15, 0x15, 0x15, 0x29, 0x29, 0x15, 0x15, 0x29, 0x05, 0x05],
+          str([l.split(",")[0] for l in reborn]))
+    check("真实配置：第 9/10 包的 wait 字节在 [4] 位",
+          reborn[8].split(",")[4] == "0x23"
+          and reborn[9].split(",")[4] == "0x14",
+          "{} {}".format(reborn[8].split(",")[4], reborn[9].split(",")[4]))
+
+    page.reverse_input.setPlainText(QCOM_REAL_TEXT)
+    page.pushButton_qcom_check.click()
+    check("界面：校验真实配置通过并列出等待时间",
+          "35 ms" in page.reverse_list.toPlainText()
+          and "20 ms" in page.reverse_list.toPlainText(),
+          page.reverse_list.toPlainText()[-120:])
+
     print("\n[16] REGS.WRITE 格式：一字板脚本 → initcode（含折行 PPS）")
     regs = icb.parse_regs_write(REGS_SAMPLE)
     check("REGS.WRITE：解析出 8 条且无错误",
           len(regs) == 8 and regs.ok, "{} / {}".format(len(regs), regs.error))
-    check("REGS.WRITE：首条 header 0x39 / cmd 0x03 / 参数 [0x01]",
-          regs[0].header == 0x39 and regs[0].cmd == 0x03
-          and regs[0].params == [0x01], str(tuple(regs[0])))
-    check("REGS.WRITE：首条字节行与手算一致",
-          to_dcs(regs[0]) == "0x39,0x00,0x00,0x02,0x03,0x01,",
+    check("REGS.WRITE：首条解析出 cmd 0x03 / 参数 [0x01]",
+          regs[0].cmd == 0x03 and regs[0].params == [0x01], str(tuple(regs[0])))
+    # 原文写 0x39，但负载只有 2 字节（命令 + 1 参数）→ 按规则应为 0x15
+    check("REGS.WRITE：2 字节负载的包头重推为 0x15",
+          to_dcs(regs[0]) == "0x15,0x00,0x00,0x02,0x03,0x01,",
           to_dcs(regs[0]))
     check("REGS.WRITE：0x53 那条参数为 [0x28]",
           regs[3].cmd == 0x53 and regs[3].params == [0x28], str(tuple(regs[3])))
@@ -550,7 +635,7 @@ def main():
     ui_regs = [line for line in page.textEdit_2.toPlainText().split("\n") if line]
     check("界面：REGS.WRITE 生成 8 行", len(ui_regs) == 8, str(len(ui_regs)))
     check("界面：首行与纯函数一致",
-          ui_regs[0] == "0x39,0x00,0x00,0x02,0x03,0x01,", ui_regs[0])
+          ui_regs[0] == "0x15,0x00,0x00,0x02,0x03,0x01,", ui_regs[0])
     check("界面：格式提示报出条数", "8" in page.format_hint.text(),
           page.format_hint.text())
 

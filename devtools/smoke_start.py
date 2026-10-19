@@ -34,9 +34,13 @@ def main():
             print(f"visible      = {window.isVisible()}")
             print(f"size         = {window.width()}x{window.height()}")
             print(f"current page = {window.stack.currentWidget().objectName()}")
-            print(f"pages        = {len(window.pages)}")
+            # 期望页数从 PAGE_DEFS 取，避免再加/合并页面时这里漏改
+            # （以前写死 6，三个转换页合并成一页后对不上）
+            from mainwindow import PAGE_DEFS
+            expected = len(PAGE_DEFS)
+            print(f"pages        = {len(window.pages)}（期望 {expected}）")
             print(f"device       = {window.deviceLabel.text()}")
-            STATUS["ok"] = window.isVisible() and len(window.pages) == 6
+            STATUS["ok"] = window.isVisible() and len(window.pages) == expected
 
         def shutdown():
             window.pages["tools"].stop_background()

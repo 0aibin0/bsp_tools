@@ -156,9 +156,9 @@
 
 | 编号 | 功能 | 说明 | 建议 | 保留 |
 | --- | --- | --- | --- | --- |
-| 80 | Initcode 正向生成 | 5 种格式：WriteAddr / Write(Command) / Rxx / GEN_WR / **mipi.write** | 保留 | 是 |
-| 81 | **Initcode 反向解析** | 字节序列 → DCS 命令清单 → 转回 4 种格式 | 保留 | 是 |
-| 82 | LK ↔ Kernel 互转 + LK→BAT | 三个转换页面 | 待定 | 是 |
+| 80 | Initcode 正向生成 | 6 种格式：WriteAddr / Write(Command) / Rxx / GEN_WR / **mipi.write** / **REGS.WRITE** | 保留 | 是 |
+| 81 | **Initcode 反向解析** | 字节序列 → DCS 命令清单 → 转回输出格式（含 QCOM 数组） | 保留 | 是 |
+| 82 | LK ↔ Kernel 互转 + LK→BAT | 合并成一页「LK 转换」，顶部单选切换方向 | 保留 | 是 |
 
 ## 十四、工程（不是用户功能，影响维护成本）
 
@@ -185,6 +185,16 @@
 | 6 | 26（连带 63-65） | 文件管理模块 | Shell Tools 已有 push/pull |
 
 ---
+
+## 本次已执行（v3.2.23）
+
+| 项 | 处理 |
+| --- | --- |
+| 82 | LK → Kernel / Kernel → LK / LK → BAT **三个页面合并成一页「LK 转换」**（顶部单选切换方向，三个转换算法原样保留）。侧边栏 6 页 → 4 页，快捷键收敛为 Ctrl+1~4 |
+| 80 | Initcode Builder 新增 **REGS.WRITE** 输入格式（第 6 种）：`REGS.WRITE(addr,dtype,payload…)`，第一个参数丢弃、第二个作参考，支持跨行语句与折行拼回 |
+| 80 | **块类型统一口径**：负载 1 字节 → 0x05、2 字节 → 0x15、≥3 字节 → 0x39（含命令字节）。六种输入格式一致 |
+| 80 | **QCOM 数组按真实面板配置修正**：第 4 字节是 `post_wait_ms`（以前写死 0，会丢 sleep out 35ms / display on 20ms 等待）；`last` 原样保留；**dtype 保留原始值**（真实配置里 05 可配 2 字节负载、29 可配 5 字节负载，按长度重推会改掉面板原值）。真实 10 包往返逐字节一致 |
+| 80 | 「校验 QCOM」通过后列出每包 dtype / 命令 / 参数个数 / 等待时间 |
 
 ## 本次已执行（v3.2.22）
 

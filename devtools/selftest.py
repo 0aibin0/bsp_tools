@@ -393,15 +393,16 @@ def main():
     qcom_out = tr.textEdit_2.toPlainText().split("\n")
     check("UNISOC → QCOM：5 包", len(qcom_out) == 5, str(len(qcom_out)))
     check("UNISOC → QCOM：裸十六进制输入 → 裸十六进制输出",
-          qcom_out[0] == "15 00 00 00 00 00 02 03 01", qcom_out[0])
-    check("UNISOC → QCOM：只有末包 last=1",
-          [l.split(" ")[1] for l in qcom_out] == ["00", "00", "00", "00", "01"],
+          qcom_out[0] == "15 01 00 00 00 00 02 03 01", qcom_out[0])
+    # 真实 QCOM 配置里第 2 字节每包都是 01（不是「只有末包置 1」）
+    check("UNISOC → QCOM：第 2 字节每包都是 01",
+          [l.split(" ")[1] for l in qcom_out] == ["01"] * 5,
           str([l.split(" ")[1] for l in qcom_out]))
     check("UNISOC → QCOM：tx_len 与原长度字节一致",
           [int(l.split(" ")[6], 16) for l in qcom_out] == [2, 5, 5, 2, 3],
           str([l.split(" ")[6] for l in qcom_out]))
     check("UNISOC → QCOM：负载原样搬运",
-          qcom_out[1] == "39 00 00 00 00 00 05 2a 00 00 04 37", qcom_out[1])
+          qcom_out[1] == "39 01 00 00 00 00 05 2a 00 00 04 37", qcom_out[1])
 
     # 输入带 0x，输出也要带
     tr.select_direction("unisoc2qcom")
@@ -410,7 +411,7 @@ def main():
     tr.convert()
     prefixed = tr.textEdit_2.toPlainText().split("\n")
     check("UNISOC → QCOM：带 0x 输入 → 带 0x 输出",
-          prefixed[0] == "0x15 0x00 0x00 0x00 0x00 0x00 0x02 0x03 0x01",
+          prefixed[0] == "0x15 0x01 0x00 0x00 0x00 0x00 0x02 0x03 0x01",
           prefixed[0])
 
     tr.select_direction("unisoc2qcom")

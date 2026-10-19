@@ -634,7 +634,15 @@ class MainWindow(QMainWindow):
 
     def show_changelog(self):
         self._info_box("更新日志",
-                       "v3.2.24 (当前)\n"
+                       "v3.2.25 (当前)\n"
+                       "  - 修 UNISOC → QCOM 转换里 QCOM 包头第 2 字节的语义：\n"
+                       "    真实面板配置里每一包都是 0x01（15 01 … / 29 01 … / 05 01 …），\n"
+                       "    不分长包短包、不分位置。上一版按「只有最后一包置 1」推导，\n"
+                       "    会让前面几条包的标志变成 0x00——如果驱动靠这个字节判断\n"
+                       "    命令集边界，前面那些初始化命令就不会被执行。\n"
+                       "  - 现在每包固定写 0x01，与面板原配置一致。\n"
+                       "  - selftest 断言改为「第 2 字节每包都是 01」。\n\n"
+                       "v3.2.24 (2026-10-19)\n"
                        "  - 转换工具页改名为「Initcode 格式转换」，并新增第 4 个方向\n"
                        "    UNISOC → QCOM：把 UNISOC 平台的 kernel 命令集转成 QCOM 的\n"
                        "    mdss-dsi-on-command 格式。\n"

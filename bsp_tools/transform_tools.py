@@ -81,8 +81,12 @@ def unisoc_to_qcom(text, default_wait=0):
     """UNISOC kernel 命令集 → QCOM mdss-dsi-on-command 数组。
 
     输入每行是一个包：`dtype pad pad len payload...`（空格分隔）。
-    输出每行一包：`dtype last vc ack wait tx_hi tx_lo payload...`，
-    只有**最后一行** last=1（与真实 QCOM 配置一致）。
+    输出每行一包：`dtype last vc ack wait tx_hi tx_lo payload...`。
+
+    **第 2 字节（last）每包都写 01**：真实 QCOM 面板配置里，不论长包短包、
+    不论位置，这个字节一律是 0x01（`15 01 …` / `29 01 …` / `05 01 …`）。
+    早期实现按「只有最后一包置 1」推导，会让前面几条包的标志为 0——
+    如果驱动按这个字节判断命令集结束，前面几条就不会被执行。
 
     **输出风格跟随输入**：输入写了 `0x` 就输出 `0x`，输入是裸十六进制
     （`15 00 00 02 03 01`）就输出裸十六进制——贴进 DTS 时不用再手改一遍。
@@ -141,10 +145,10 @@ def unisoc_to_qcom(text, default_wait=0):
     template = "0x{:02x}" if use_prefix else "{:02x}"
 
     lines = []
-    for index, row in enumerate(rows):
-        last = 1 if index == len(rows) - 1 else 0
+    for row in rows:
+        # 第 2 字节恒为 0x01（真实 QCOM 配置里每包都是 01）
         length = len(row["payload"])
-        packet = [row["dtype"], last, 0x00, 0x00, row["wait"],
+        packet = [row["dtype"], 0x01, 0x00, 0x00, row["wait"],
                   (length >> 8) & 0xFF, length & 0xFF] + row["payload"]
         lines.append(" ".join(template.format(v) for v in packet))
     return lines, problems

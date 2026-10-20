@@ -340,10 +340,11 @@ class Ui_ShellTools(object):
         shell_row.addWidget(self.debug_shell_stop)
 
         # 删除历史：历史下拉只能增不能减，输错一条就永远留在列表里。
-        # 定宽 30：这一行已经挤着命令框 + Run + Stop，按钮不能按 sizeHint 撑。
+        # 宽度 34：按钮判定要预留 24px 内边距，缺少字体的机器上 ✕ 会更宽
+        # （实测 30px 会在 CI 上报「文字裁切」）。
         self.debug_shell_forget = self._button(
-            self.groupBox_6, "debug_shell_forget", "✕", height=28, min_width=30)
-        self.debug_shell_forget.setFixedWidth(30)
+            self.groupBox_6, "debug_shell_forget", "✕", height=28, min_width=34)
+        self.debug_shell_forget.setFixedWidth(34)
         self.debug_shell_forget.setToolTip(
             "删除当前这条历史记录（也可在弹出的历史列表里右键删除）")
         self._ghost(self.debug_shell_forget)

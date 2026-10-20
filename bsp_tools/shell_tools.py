@@ -9,7 +9,7 @@ from PyQt5.QtGui import QFont, QTextCursor
 from PyQt5.QtGui import QDesktopServices
 from PyQt5.QtWidgets import (QComboBox, QMessageBox, QFileDialog, QInputDialog,
                              QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-                             QScrollArea, QFrame, QWidget)
+                             QScrollArea, QFrame, QWidget, QMenu)
 
 import app_config
 import theme
@@ -211,6 +211,11 @@ class ShellToolsPage(BaseToolPage, Ui_ShellTools):
         self.debug_shell_run.clicked.connect(self.on_shell_run)
         self.debug_shell_cmd.lineEdit().returnPressed.connect(self.on_shell_run)
         self.debug_shell_stop.clicked.connect(self.on_shell_stop)
+        self.debug_shell_forget.clicked.connect(self.on_forget_shell_history)
+        # 历史列表里右键删除（用 ✕ 按钮删当前项之外的另一条路）
+        self.debug_shell_cmd.view().setContextMenuPolicy(Qt.CustomContextMenu)
+        self.debug_shell_cmd.view().customContextMenuRequested.connect(
+            self.on_shell_history_menu)
         # push / pull 按钮已下线：常用工具页的「文件管理」是超集（浏览 + 上传 +
         # 下载 + 删除 + 路径书签），方法保留以便想恢复时只改 UI
         self.debug_density_get.clicked.connect(self.on_density_get)
@@ -654,6 +659,58 @@ class ShellToolsPage(BaseToolPage, Ui_ShellTools):
         self._stream_thread.finished.connect(self._on_stream_end)
         self._stream_thread.error.connect(self._on_stream_err)
         self._stream_thread.start()
+
+    def on_forget_shell_history(self):
+        """删除当前这条历史记录。
+
+        历史下拉以前只能「执行时前插」，输错一条就永远赖在列表里。
+        这里删掉下拉列表里与输入框内容相同的那一项，并立即落盘。
+        """
+        combo = self.debug_shell_cmd
+        text = combo.currentText().strip()
+        if not text:
+            return
+        removed = False
+        for index in range(combo.count() - 1, -1, -1):
+            if combo.itemText(index).strip() == text:
+                combo.removeItem(index)
+                removed = True
+        # 输入框里已经敲的内容保留（用户可能想改完再跑），只清下拉项
+        combo.lineEdit().setText("")
+        if removed:
+            self.save_config()
+            self.append_text("[历史] 已删除：{}\n".format(text))
+        else:
+            self.append_text("[历史] 列表里没有这条：{}\n".format(text))
+
+    def on_shell_history_menu(self, pos):
+        """历史列表右键菜单：删除选中项 / 清空全部历史。"""
+        view = self.debug_shell_cmd.view()
+        index = view.indexAt(pos)
+        menu = QMenu(self)
+        if index.isValid():
+            text = self.debug_shell_cmd.itemText(index.row())
+            act_remove = menu.addAction("删除「{}」".format(
+                text if len(text) <= 40 else text[:37] + "…"))
+            act_remove.triggered.connect(
+                lambda _c=False, row=index.row(): self._remove_history_row(row))
+        act_clear = menu.addAction("清空全部历史")
+        act_clear.triggered.connect(self.on_clear_shell_history)
+        menu.exec_(view.viewport().mapToGlobal(pos))
+
+    def _remove_history_row(self, row):
+        if 0 <= row < self.debug_shell_cmd.count():
+            text = self.debug_shell_cmd.itemText(row)
+            self.debug_shell_cmd.removeItem(row)
+            self.save_config()
+            self.append_text("[历史] 已删除：{}\n".format(text))
+
+    def on_clear_shell_history(self):
+        """清空全部历史。"""
+        self.debug_shell_cmd.clear()
+        self.debug_shell_cmd.lineEdit().setText("")
+        self.save_config()
+        self.append_text("[历史] 已清空\n")
 
     def _on_stream_line(self, line):
         self.append_text(line)

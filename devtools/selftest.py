@@ -1481,6 +1481,24 @@ def main():
           "回车" in cmd.lineEdit().placeholderText(),
           cmd.lineEdit().placeholderText())
 
+    # ---- 历史可删除：以前历史只能增不能减，输错一条永远赖着 ----
+    check("有删除历史按钮", hasattr(shell, "debug_shell_forget"))
+    cmd.clear()
+    for text in ("dumpsys battery", "输错的命令", "getprop ro.build.version"):
+        cmd.addItem(text)
+    cmd.setCurrentText("输错的命令")
+    shell.on_forget_shell_history()
+    left = [cmd.itemText(i) for i in range(cmd.count())]
+    check("✕ 按钮删掉当前这条历史", "输错的命令" not in left and len(left) == 2,
+          str(left))
+    shell._remove_history_row(0)
+    check("按行号删除历史", cmd.count() == 1, str(cmd.count()))
+    shell.on_clear_shell_history()
+    check("清空全部历史", cmd.count() == 0, str(cmd.count()))
+    cmd.setCurrentText("不存在")
+    shell.on_forget_shell_history()
+    check("删不存在的条目不崩", True)
+
     print("\n[19] 自动更新：下载完整性校验（DLL 报错的根因）")
     import http.server
     import threading

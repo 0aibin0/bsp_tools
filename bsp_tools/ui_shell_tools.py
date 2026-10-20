@@ -338,6 +338,17 @@ class Ui_ShellTools(object):
         self.debug_shell_stop = self._button(
             self.groupBox_6, "debug_shell_stop", "Stop", height=28)
         shell_row.addWidget(self.debug_shell_stop)
+
+        # 删除历史：历史下拉只能增不能减，输错一条就永远留在列表里。
+        # 定宽 30：这一行已经挤着命令框 + Run + Stop，按钮不能按 sizeHint 撑。
+        self.debug_shell_forget = self._button(
+            self.groupBox_6, "debug_shell_forget", "✕", height=28, min_width=30)
+        self.debug_shell_forget.setFixedWidth(30)
+        self.debug_shell_forget.setToolTip(
+            "删除当前这条历史记录（也可在弹出的历史列表里右键删除）")
+        self._ghost(self.debug_shell_forget)
+        shell_row.addWidget(self.debug_shell_forget)
+
         func_layout.addLayout(shell_row)
         func_layout.addStretch(1)
 
@@ -496,6 +507,7 @@ class Ui_ShellTools(object):
         self.groupBox_debug.setTitle(t("Debug"))
         self.debug_shell_run.setText(t("Run"))
         self.debug_shell_stop.setText(t("Stop"))
+        self.debug_shell_forget.setText(t("✕"))
         self.debug_density_get.setText(t("density"))
         self.debug_density_set.setText(t("Set"))
         self.debug_printk_get.setText(t("Get"))

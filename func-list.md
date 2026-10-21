@@ -186,6 +186,12 @@
 
 ---
 
+## 本次已执行（v3.2.27）
+
+| 项 | 处理 |
+| --- | --- |
+| 76 | 修 **ylog 导出后 Log 面板整块变蓝**：点「存储路径」进文件夹之后，面板里每行都成蓝字下划线、原抓取结果也被清空。根因是 `QTextBrowser.openLinks` 默认 `True`，点 `file://` 链接会自己 `setSource()` 把目录当 HTML 文档加载——加载失败后文档被清掉，`currentCharFormat` 却留着链接格式，`append_text` 的 `insertPlainText` 继承它，后续日志全变超链接。现在面板 `setOpenLinks(False)`；`append_text` 每次输出前重置字符格式并移回末尾（以前光标停在链接上会把新文字插进链接中间）；路径/文件名补 HTML 转义 |
+
 ## 本次已执行（v3.2.26）
 
 | 项 | 处理 |

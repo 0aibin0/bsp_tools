@@ -1039,6 +1039,38 @@ def main():
               "max={}/{}".format(shell.ylogpath_2.maximumWidth(),
                                  shell.ylogpath_3.maximumWidth()))
 
+        # ylog 导出成功后日志框里有一条 file:// 链接。QTextBrowser 的
+        # openLinks 默认 True：点一下它会自己 setSource(url) 把目录当 HTML
+        # 文档加载——文档被清空，currentCharFormat 却留着链接样式，之后每条
+        # 日志都变成蓝字下划线（用户报的「点完链接全变超链接」就是这个）。
+        view = shell.textBrowser
+        check("日志框关闭了 openLinks（点链接不会清空/染蓝）",
+              not view.openLinks())
+        view.setHtml("<b>存储路径:</b>"
+                     "<a href='file:///D:/tmp' style='color:blue;'>D:\\tmp</a>"
+                     "<br/>文件列表")
+        shell.append_text("后续日志\n")
+        check("链接之后日志内容没丢",
+              "存储路径" in view.toPlainText(), repr(view.toPlainText()[:40]))
+
+        # 取全文最后一个非空片段（末尾的换行会留下一个空 block）
+        last_fmt = None
+        block = view.document().begin()
+        while block.isValid():
+            iterator = block.begin()
+            while not iterator.atEnd():
+                fragment = iterator.fragment()
+                if fragment.isValid() and fragment.text():
+                    last_fmt = fragment.charFormat()
+                iterator += 1
+            block = block.next()
+        check("链接之后追加的日志不是超链接",
+              last_fmt is not None and not last_fmt.isAnchor(),
+              repr(last_fmt.anchorHref()) if last_fmt else "无片段")
+        check("链接之后追加的日志没有下划线",
+              last_fmt is not None and not last_fmt.fontUnderline(),
+              str(last_fmt.fontUnderline()) if last_fmt else "无片段")
+
         # 引号必须成对，否则 shell 会解析出错
         unbalanced = [c for c, _l in collected if c.count('"') % 2 != 0]
         check("命令中双引号成对", not unbalanced, str(unbalanced))

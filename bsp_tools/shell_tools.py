@@ -1,11 +1,12 @@
 import os
 import glob
+import html
 import re
 import sys
 import subprocess
 
 from PyQt5.QtCore import QProcess, QUrl, QThread, pyqtSignal, Qt, QTimer
-from PyQt5.QtGui import QFont, QTextCursor
+from PyQt5.QtGui import QFont, QTextCursor, QTextCharFormat
 from PyQt5.QtGui import QDesktopServices
 from PyQt5.QtWidgets import (QComboBox, QMessageBox, QFileDialog, QInputDialog,
                              QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
@@ -169,6 +170,13 @@ class ShellToolsPage(BaseToolPage, Ui_ShellTools):
     def _setup_textbrowser_style(self):
         self.textBrowser.setObjectName("logView")
         self.textBrowser.setFont(theme.mono_font(10))
+        # 日志面板里会出现 file:// 链接（ylog 导出成功后的存储路径）。
+        # QTextBrowser 的 openLinks 默认是 True：点一下它会自己 setSource(url)，
+        # 把目标当 HTML 文档加载。目录当然加载不出文档 → 整个日志被清空，
+        # 而 currentCharFormat 还留着链接的样式（蓝字 + 下划线 + anchor），
+        # 之后追加的每条日志都继承成超链接。关掉内部跳转，点击只走
+        # anchorClicked，交给系统资源管理器打开。
+        self.textBrowser.setOpenLinks(False)
 
     def _setup_partitions(self):
         partitions = ['uboot_a', 'uefi_a', 'xbl_config_a', 'dcp_a',
@@ -319,7 +327,20 @@ class ShellToolsPage(BaseToolPage, Ui_ShellTools):
         if thread in self._threads:
             self._threads.remove(thread)
 
+    def _reset_log_format(self):
+        """把当前字符格式清回默认值再输出。
+
+        ylog 导出成功那段提示是带 <a href> 的富文本，QTextBrowser.setHtml()
+        会把链接的字符格式（蓝色 + 下划线 + anchor 属性）留在 currentCharFormat
+        上；append_text 用的是 insertPlainText，插入时**继承当前格式**，于是
+        之后的每条日志都变成蓝色超链接样式——点过一次「存储路径」整块变蓝，
+        根因就在这里。每次输出前重置一次，日志永远是默认纯文本样式。
+        """
+        self.textBrowser.moveCursor(QTextCursor.End)   # 同时也清掉选区
+        self.textBrowser.setCurrentCharFormat(QTextCharFormat())
+
     def append_text(self, msg):
+        self._reset_log_format()
         self.textBrowser.insertPlainText(msg)
         self.textBrowser.moveCursor(QTextCursor.End)
         self._write_log(msg)
@@ -556,18 +577,22 @@ class ShellToolsPage(BaseToolPage, Ui_ShellTools):
                     file_list = "(无法列出文件)"
                 self.textBrowser.setOpenExternalLinks(False)
                 uri_path = QUrl.fromLocalFile(full_path)
-                html = (
+                # 路径和文件名可能含 & < >（例如 D:\a&b），不转义会被当成 HTML 标签
+                message_html = (
                     f"<span style='color:green'>v</span> ylog抓取成功!<br/>"
-                    f"<b>存储路径:</b><a href='{uri_path.toString()}' style='color:blue;'>"
-                    f"{full_path}</a><br/>"
-                    f"<b>文件列表:</b><br/>{file_list}"
+                    f"<b>存储路径:</b><a href='{html.escape(uri_path.toString())}'"
+                    f" style='color:blue;'>{html.escape(full_path)}</a><br/>"
+                    f"<b>文件列表:</b><br/>{html.escape(file_list)}"
                 )
-                self.textBrowser.setHtml(html)
+                self.textBrowser.setHtml(message_html)
                 try:
                     self.textBrowser.anchorClicked.disconnect()
                 except TypeError:
                     pass
                 self.textBrowser.anchorClicked.connect(lambda url: QDesktopServices.openUrl(url))
+                # setHtml 之后 currentCharFormat 是链接的样式，这里先清一次，
+                # 用户接着手动输入的内容也不会带上蓝色超链接格式
+                self._reset_log_format()
             else:
                 self.append_text(f"执行命令: {adb_cmd}\n")
                 self.append_text(f"结果:\n{output}\n")

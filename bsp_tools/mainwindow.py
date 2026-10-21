@@ -634,7 +634,21 @@ class MainWindow(QMainWindow):
 
     def show_changelog(self):
         self._info_box("更新日志",
-                       "v3.2.26 (当前)\n"
+                       "v3.2.27 (当前)\n"
+                       "  - 修 ylog 导出后 Log 面板整块变成蓝色超链接：点「存储路径」\n"
+                       "    进文件夹之后，面板里每一行都变成蓝字带下划线，连原来抓到的\n"
+                       "    结果也没了。根因是 QTextBrowser 的 openLinks 默认为 True——\n"
+                       "    点 file:// 链接时它会自己 setSource(url)，把目录当 HTML 文档\n"
+                       "    加载；加载失败后文档被清空，但 currentCharFormat 还留着链接\n"
+                       "    格式（anchor + 下划线 + 蓝色），而 append_text 用的\n"
+                       "    insertPlainText 会继承当前格式，于是之后每条日志都成了超链接。\n"
+                       "      · Log 面板关闭 openLinks，点击只走 anchorClicked 交给系统打开\n"
+                       "      · append_text 每次输出前重置字符格式，并先移到末尾——以前\n"
+                       "        光标停在链接上时，新日志会被插进链接中间，把链接劈成两截\n"
+                       "      · ylog 成功提示里的路径 / 文件名做 HTML 转义，含 & < 的路径\n"
+                       "        不会再被当成标签吃掉\n"
+                       "  - selftest 299 → 303 项。\n\n"
+                       "v3.2.26 (2026-10-20)\n"
                        "  - Shell Tools · func 卡片：自定义命令的历史记录现在可以删了。\n"
                        "    以前历史只增不减——执行时前插、满 10 条丢最旧的，界面上却\n"
                        "    没有任何删除入口，输错一条就永远赖在列表里。\n"

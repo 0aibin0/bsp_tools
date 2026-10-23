@@ -205,8 +205,9 @@ class ShellToolsPage(BaseToolPage, Ui_ShellTools):
     def _setup_partitions(self):
         partitions = ['uboot_a', 'uefi_a', 'xbl_config_a', 'dcp_a',
                       'aop_config_a', 'dtbo_a']
-        self.flash_partition.addItems(partitions)
-        self.flash_partition.setCurrentText('')
+        for row in self.flash_rows:
+            row["partition"].addItems(partitions)
+            row["partition"].setCurrentText('')
 
     def _setup_printk(self):
         for i in range(9):
@@ -224,6 +225,7 @@ class ShellToolsPage(BaseToolPage, Ui_ShellTools):
         self.ylogpath.setPlaceholderText(r"默认路径为D:\Desktop\allylog")
         # fastboot flash
         self.flash_browse.clicked.connect(self.on_flash_browse)
+        self.flash_browse_2.clicked.connect(self.on_flash_browse_2)
         self.flash_btn.clicked.connect(self.on_flash)
         self.fb_mode.clicked.connect(self.adbrebootbootloader)
         self.fb_reboot.clicked.connect(self.fastbootreboot)
@@ -389,10 +391,26 @@ class ShellToolsPage(BaseToolPage, Ui_ShellTools):
         self._commands_queue = list(commands)
         self._commands_output = []
         self._commands_success_msg = success_msg
+        self._commands_failed = None      # 第一批失败的命令（非 0 退出即停）
         self.append_text("运行中...\n")
         self._run_next_in_chain()
 
     def _run_next_in_chain(self):
+        if self._commands_failed is not None:
+            # 中途失败：不再往下刷，避免带着错误状态继续（多分区烧录尤其危险）
+            self._set_busy(False)
+            self.textBrowser.clear()
+            for cmd, out in self._commands_output:
+                self.append_text(f"执行命令: {cmd}\n")
+                self.append_text(f"结果:\n{out}\n")
+                self.append_text(f"{'-' * 40}\n")
+            remaining = len(self._commands_queue)
+            self.append_text(
+                f"已停止：`{self._commands_failed}` 失败（exit≠0）\n")
+            if remaining:
+                self.append_text(f"剩下 {remaining} 条命令没有执行。\n")
+            return
+
         if not self._commands_queue:
             self._set_busy(False)
             self.textBrowser.clear()
@@ -407,10 +425,13 @@ class ShellToolsPage(BaseToolPage, Ui_ShellTools):
 
         def on_done(exit_code, output):
             self._commands_output.append((cmd, output))
+            if exit_code not in (0, None):
+                self._commands_failed = cmd
             self._run_next_in_chain()
 
         def on_error(msg):
             self._commands_output.append((cmd, f"[错误] {msg}"))
+            self._commands_failed = cmd
             self._run_next_in_chain()
 
         thread = CommandThread(cmd, parent=self)
@@ -518,8 +539,17 @@ class ShellToolsPage(BaseToolPage, Ui_ShellTools):
             self.apk1_path.setText(config.get('apk_path', '') or detect_apk())
             self.scrcpy_path.setText(
                 config.get('scrcpy_path', '') or detect_scrcpy())
-            self.flash_partition.setCurrentText(config.get('flash_partition', ''))
-            self.flash_img_path.setText(config.get('flash_img', ''))
+            self.flash_rows[0]["partition"].setCurrentText(
+                config.get('flash_partition', ''))
+            self.flash_rows[0]["image"].setText(config.get('flash_img', ''))
+            self.flash_rows[1]["partition"].setCurrentText(
+                config.get('flash_partition_2', ''))
+            self.flash_rows[1]["image"].setText(config.get('flash_img_2', ''))
+            # 布尔值必须走 get_bool：app_config.get() 会把所有值转成字符串，
+            # bool('False') 是 True，勾选状态就再也存不回去了。
+            self.flash_erase.setChecked(config.get_bool('flash_erase', False))
+            self.flash_skip_missing.setChecked(
+                config.get_bool('flash_skip_missing', True))
             self.debug_density_val.setText(config.get('density_val', ''))
             self.debug_printk_level.setCurrentText(config.get('printk_level', '8'))
             self.debug_shell_cmd.setCurrentText(config.get('shell_cmd', ''))
@@ -539,8 +569,12 @@ class ShellToolsPage(BaseToolPage, Ui_ShellTools):
             sub_name=self.ylogpath_3.text().strip(),
             apk_path=self.apk1_path.text().strip(),
             scrcpy_path=self.scrcpy_path.text().strip(),
-            flash_partition=self.flash_partition.currentText().strip(),
-            flash_img=self.flash_img_path.text().strip(),
+            flash_partition=self.flash_rows[0]["partition"].currentText().strip(),
+            flash_img=self.flash_rows[0]["image"].text().strip(),
+            flash_partition_2=self.flash_rows[1]["partition"].currentText().strip(),
+            flash_img_2=self.flash_rows[1]["image"].text().strip(),
+            flash_erase=self.flash_erase.isChecked(),
+            flash_skip_missing=self.flash_skip_missing.isChecked(),
             density_val=self.debug_density_val.text().strip(),
             printk_level=self.debug_printk_level.currentText().strip(),
             shell_cmd=self.debug_shell_cmd.currentText().strip(),
@@ -611,28 +645,90 @@ class ShellToolsPage(BaseToolPage, Ui_ShellTools):
     # === fastboot flash ===
 
     def on_flash_browse(self):
+        """第 1 行浏览镜像。"""
+        self._browse_flash_row(0)
+
+    def on_flash_browse_2(self):
+        """第 2 行浏览镜像。"""
+        self._browse_flash_row(1)
+
+    def _browse_flash_row(self, index):
         path, _ = QFileDialog.getOpenFileName(
             self, "选择镜像文件", "", "All Files (*)")
-        if path:
-            self.flash_img_path.setText(path)
-            self.save_config()
-            self.flash_partition.setFocus()
+        if not path:
+            return
+        row = self.flash_rows[index]
+        row["image"].setText(path)
+        self.save_config()
+        row["partition"].setFocus()
+
+    def _filled_flash_rows(self):
+        """取出填了内容的行，返回 ([(分区, 镜像)], 只有一半的行数)。
+
+        「跳过未填的行」勾上时，只填一半的行会被忽略（不报错）；
+        不勾时要求每行都填全，否则提示。
+        """
+        entries = []
+        half_filled = []
+        for row in self.flash_rows:
+            partition = row["partition"].currentText().strip()
+            image = row["image"].text().strip()
+            if not partition and not image:
+                continue                      # 整行空着：本来就不刷
+            if partition and image:
+                entries.append((partition, image))
+            else:
+                half_filled.append(partition or image)
+        return entries, half_filled
 
     def on_flash(self):
-        partition = self.flash_partition.currentText().strip()
-        img_path = self.flash_img_path.text().strip()
+        """烧录：按两行控件里填的内容，依次刷每个分区。"""
+        entries, half_filled = self._filled_flash_rows()
 
-        if not partition:
-            QMessageBox.warning(self, "参数缺失", "请输入分区名")
+        if half_filled and not self.flash_skip_missing.isChecked():
+            QMessageBox.warning(
+                self, "参数不完整",
+                "这些行只填了一半（要分区和镜像都填）：\n"
+                + "\n".join(half_filled[:4]))
             return
-        if not img_path:
-            QMessageBox.warning(self, "参数缺失", "请选择镜像文件")
+
+        if not entries:
+            QMessageBox.warning(self, "参数缺失", "请至少填一行分区和镜像")
             return
 
         self.save_config()
-        erase_cmd = f'fastboot erase {partition}'
-        flash_cmd = f'fastboot flash {partition} "{img_path}"'
-        self._exec_chain([erase_cmd, flash_cmd], f"{partition} 烧录完成")
+        self._flash_many(entries)
+
+    def _flash_many(self, entries):
+        """按顺序烧录多个分区；失败即停，不会带着错误往下刷。
+
+        entries: [(分区, 镜像路径), ...]
+        """
+        entries = [(p, i) for p, i in entries if p and i]
+        if not entries:
+            QMessageBox.warning(self, "参数缺失", "没有可烧录的分区/镜像")
+            return
+
+        # 镜像不存在时先拦下来——否则每条都要等 fastboot 报错
+        missing = [img for _p, img in entries if not os.path.exists(img)]
+        if missing:
+            QMessageBox.warning(
+                self, "文件不存在",
+                "这些镜像找不到：\n" + "\n".join(missing[:6]))
+            return
+
+        commands = []
+        for partition, img_path in entries:
+            if self.flash_erase.isChecked():
+                commands.append(f'fastboot erase {partition}')
+            commands.append(f'fastboot flash {partition} "{img_path}"')
+
+        if len(entries) == 1:
+            message = f"{entries[0][0]} 烧录完成"
+        else:
+            message = "{} 个分区烧录完成：{}".format(
+                len(entries), "、".join(p for p, _i in entries))
+        self._exec_chain(commands, message)
 
     # === APK & Tools ===
 

@@ -243,34 +243,81 @@ class Ui_ShellTools(object):
         self.groupBox_flash, flash_layout = self._group(
             parent, "groupBox_flash", "fastboot flash")
 
-        # 第 1 行：分区 + 镜像路径 + 浏览
-        path_row = QtWidgets.QHBoxLayout()
-        path_row.setSpacing(5)
-        self.flash_partition = QtWidgets.QComboBox(self.groupBox_flash)
-        self.flash_partition.setEditable(True)
-        self.flash_partition.setMinimumHeight(26)
-        self.flash_partition.setMinimumWidth(118)
-        self.flash_partition.setObjectName("flash_partition")
-        # 可编辑下拉框留空时看着像坏掉，给个占位提示（Qt 5.15 才有该接口）
-        if hasattr(self.flash_partition, "setPlaceholderText"):
-            self.flash_partition.setPlaceholderText("分区")
-        path_row.addWidget(self.flash_partition)
-        self.flash_img_path = QtWidgets.QLineEdit(self.groupBox_flash)
-        self.flash_img_path.setMinimumHeight(26)
-        self.flash_img_path.setMinimumWidth(40)
-        self.flash_img_path.setPlaceholderText("镜像文件…")
-        self.flash_img_path.setReadOnly(True)
-        self.flash_img_path.setObjectName("flash_img_path")
-        path_row.addWidget(self.flash_img_path, 1)
-        self.flash_browse = self._button(
-            self.groupBox_flash, "flash_browse", "", height=26)
-        self.flash_browse.setFixedWidth(46)
-        self.flash_browse.setIcon(theme.icon("folder", theme.TEXT_MUTED, 14, 1.7))
-        self.flash_browse.setToolTip("浏览镜像文件")
-        path_row.addWidget(self.flash_browse)
-        flash_layout.addLayout(path_row)
+        # 两行「分区 + 镜像」+ 浏览。刷两块分区是常见场景（uboot/dtbo 之类），
+        # 只有一行就得刷一次改一次，所以固定给两行；不勾第二行就不刷它。
+        #
+        # 两行必须**等宽对齐**：分区框给固定宽度，两行用同一个值；
+        # 否则占位文字长短不同会让 QComboBox 的 sizeHint 差出 50 多像素
+        # （「分区」123px vs 「分区（可选，留空不刷）」177px），中间分割点就错开了。
+        PARTITION_WIDTH = 128
+        self.flash_rows = []
+        for index in (1, 2):
+            row = QtWidgets.QHBoxLayout()
+            row.setSpacing(5)
 
-        # 第 2 行：Flash + fastboot mode/reboot
+            partition = QtWidgets.QComboBox(self.groupBox_flash)
+            partition.setEditable(True)
+            partition.setMinimumHeight(26)
+            partition.setFixedWidth(PARTITION_WIDTH)
+            partition.setObjectName("flash_partition" if index == 1
+                                     else "flash_partition_%d" % index)
+            if hasattr(partition, "setPlaceholderText"):
+                # 两行用同一句占位文字，避免内容差异影响视觉对齐
+                partition.setPlaceholderText("分区")
+            row.addWidget(partition)
+
+            img_path = QtWidgets.QLineEdit(self.groupBox_flash)
+            img_path.setMinimumHeight(26)
+            img_path.setMinimumWidth(40)
+            img_path.setPlaceholderText(
+                "镜像文件…" if index == 1 else "镜像文件（可选）")
+            img_path.setReadOnly(True)
+            img_path.setObjectName("flash_img_path" if index == 1
+                                   else "flash_img_path_%d" % index)
+            row.addWidget(img_path, 1)
+
+            browse = self._button(
+                self.groupBox_flash, "flash_browse" if index == 1
+                else "flash_browse_%d" % index, "", height=26)
+            browse.setFixedWidth(46)
+            browse.setIcon(theme.icon("folder", theme.TEXT_MUTED, 14, 1.7))
+            browse.setToolTip("浏览镜像文件")
+            row.addWidget(browse)
+
+            flash_layout.addLayout(row)
+            self.flash_rows.append({
+                "partition": partition, "image": img_path, "browse": browse})
+
+        # 兼容旧名字：单分区时代的代码/测试都按这两个名字取控件
+        self.flash_partition = self.flash_rows[0]["partition"]
+        self.flash_img_path = self.flash_rows[0]["image"]
+        self.flash_browse = self.flash_rows[0]["browse"]
+        self.flash_partition_2 = self.flash_rows[1]["partition"]
+        self.flash_img_path_2 = self.flash_rows[1]["image"]
+        self.flash_browse_2 = self.flash_rows[1]["browse"]
+
+        # 烧录行为控制行
+        control_row = QtWidgets.QHBoxLayout()
+        control_row.setSpacing(6)
+        self.flash_erase = QtWidgets.QCheckBox("先 erase", self.groupBox_flash)
+        self.flash_erase.setObjectName("flash_erase")
+        self.flash_erase.setToolTip(
+            "烧录前先 fastboot erase <分区>。默认不勾——flash 本身是覆盖写，"
+            "而 boot/dtbo 这类分区 erase 后万一 flash 失败，设备会起不来。")
+        self.flash_erase.setChecked(False)
+        control_row.addWidget(self.flash_erase)
+
+        self.flash_skip_missing = QtWidgets.QCheckBox(
+            "跳过未填的行", self.groupBox_flash)
+        self.flash_skip_missing.setObjectName("flash_skip_missing")
+        self.flash_skip_missing.setToolTip(
+            "勾选：只刷填了分区和镜像的行；不勾：第二行只填一半会提示错误")
+        self.flash_skip_missing.setChecked(True)
+        control_row.addWidget(self.flash_skip_missing)
+        control_row.addStretch(1)
+        flash_layout.addLayout(control_row)
+
+        # 最后一行：Flash + fastboot mode/reboot
         flash_row = QtWidgets.QHBoxLayout()
         flash_row.setSpacing(5)
         self.flash_btn = self._button(
@@ -516,6 +563,9 @@ class Ui_ShellTools(object):
         self.groupBox_flash.setTitle(t("fastboot flash"))
         self.flash_browse.setText(t(""))
         self.flash_btn.setText(t("Flash"))
+        self.flash_browse_2.setText(t(""))
+        self.flash_erase.setText(t("先 erase"))
+        self.flash_skip_missing.setText(t("跳过未填的行"))
         self.fb_mode.setText(t("fastboot mode"))
         self.fb_reboot.setText(t("reboot"))
         self.groupBox_6.setTitle(t("func"))

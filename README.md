@@ -2,7 +2,7 @@
 
 > BSP / LCM 屏体调试工具集 —— PyQt5 单窗口桌面应用，把屏体调试要用的命令、计算和取证固化成一键操作。
 
-[![version](https://img.shields.io/badge/version-v3.2.29-2f6bff)](#版本与发版)
+[![version](https://img.shields.io/badge/version-v3.2.30-2f6bff)](#版本与发版)
 [![python](https://img.shields.io/badge/python-3.11-3776ab)](https://www.python.org/)
 [![pyqt5](https://img.shields.io/badge/PyQt5-5.15.10-41cd52)](https://pypi.org/project/PyQt5/)
 [![platform](https://img.shields.io/badge/platform-Windows%2010%2F11-0078d4)](#环境要求)
@@ -238,7 +238,7 @@ run_checks.bat device     # 再加上真机相关的 4 项（要连板子）
   失败则当前版本不动，避免半截 exe 换上去后新版本起不来。
 - 仓库若改为私有：在本机数据文件的 `config` 段加 `"update_token": "ghp_xxx"`。
 
-当前版本：**v3.2.29**
+当前版本：**v3.2.30**
 
 ---
 

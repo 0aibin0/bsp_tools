@@ -1520,6 +1520,100 @@ def main():
           "回车" in cmd.lineEdit().placeholderText(),
           cmd.lineEdit().placeholderText())
 
+    # ---- 多分区烧录：两行选择框 + 命令拼装 + 失败即停 ----
+    print("\n[18b] fastboot 多分区烧录（两行选择框）")
+    check("有两行分区选择框", len(shell.flash_rows) == 2,
+          str(len(shell.flash_rows)))
+    check("两行的分区框互不相同",
+          shell.flash_rows[0]["partition"] is not shell.flash_rows[1]["partition"])
+    # 两行必须等宽对齐：占位文字长短不同会让 QComboBox 的 sizeHint 差 50+px
+    row1, row2 = shell.flash_rows
+    check("两行分区框等宽",
+          row1["partition"].width() == row2["partition"].width(),
+          "{} vs {}".format(row1["partition"].width(),
+                            row2["partition"].width()))
+    check("两行镜像框起点与宽度一致",
+          row1["image"].x() == row2["image"].x()
+          and row1["image"].width() == row2["image"].width(),
+          "x={}/{} w={}/{}".format(row1["image"].x(), row2["image"].x(),
+                                   row1["image"].width(),
+                                   row2["image"].width()))
+    check("两行浏览按钮位置一致",
+          row1["browse"].x() == row2["browse"].x(),
+          "{} vs {}".format(row1["browse"].x(), row2["browse"].x()))
+    # 勾选状态要能往返（app_config.get 会把值转成字符串，
+    # 用 bool('False') 会得到 True——所以必须走 get_bool）
+    check("erase 开关的读回用 get_bool",
+          app_config.config().get_bool("flash_erase", False)
+          == shell.flash_erase.isChecked(),
+          "配置={!r} 控件={}".format(
+              app_config.config().get("flash_erase"),
+              shell.flash_erase.isChecked()))
+    check("跳过未填的行默认勾选", shell.flash_skip_missing.isChecked())
+
+    # 两行都填 → 两个分区
+    for row, (part, img) in zip(shell.flash_rows, (("uboot_a", "a.img"),
+                                                   ("dtbo_a", "b.img"))):
+        row["partition"].setCurrentText(part)
+        row["image"].setText(img)
+    entries, half = shell._filled_flash_rows()
+    check("两行都填：读到两条", entries == [("uboot_a", "a.img"),
+                                            ("dtbo_a", "b.img")], str(entries))
+    check("两行都填：没有半填的行", half == [], str(half))
+
+    # 第二行留空 → 只刷第一行
+    shell.flash_rows[1]["partition"].setCurrentText("")
+    shell.flash_rows[1]["image"].setText("")
+    entries, half = shell._filled_flash_rows()
+    check("第二行留空：只刷第一行", entries == [("uboot_a", "a.img")], str(entries))
+    check("第二行留空：不算半填", half == [], str(half))
+
+    # 第二行只填分区（缺镜像）
+    shell.flash_rows[1]["partition"].setCurrentText("dtbo_a")
+    entries, half = shell._filled_flash_rows()
+    check("只填分区算半填", entries == [("uboot_a", "a.img")] and half,
+          str((entries, half)))
+
+    # _flash_many 拼出来的命令序列：默认不 erase
+    captured = {}
+    shell._exec_chain = lambda cmds, msg: captured.update(cmds=cmds, msg=msg)
+    tmp_dir = tempfile.mkdtemp(prefix="dt-flash-")
+    tmp_img = os.path.join(tmp_dir, "boot.img")
+    open(tmp_img, "wb").write(b"x")
+    tmp_img2 = os.path.join(tmp_dir, "dtbo.img")
+    open(tmp_img2, "wb").write(b"x")
+
+    shell.flash_erase.setChecked(False)
+    shell._flash_many([("uboot_a", tmp_img), ("dtbo_a", tmp_img2)])
+    check("默认不擦除：只有 flash 命令",
+          captured["cmds"] == [
+              'fastboot flash uboot_a "{}"'.format(tmp_img),
+              'fastboot flash dtbo_a "{}"'.format(tmp_img2)],
+          str(captured["cmds"]))
+    check("多分区提示里列出全部分区",
+          "2 个分区" in captured["msg"], captured["msg"])
+
+    shell.flash_erase.setChecked(True)
+    shell._flash_many([("uboot_a", tmp_img)])
+    check("勾选 erase 后先擦再写",
+          captured["cmds"] == ["fastboot erase uboot_a",
+                               'fastboot flash uboot_a "{}"'.format(tmp_img)],
+          str(captured["cmds"]))
+    shell.flash_erase.setChecked(False)
+
+    # 镜像不存在要拦下来（弹出警告后直接返回，不排命令）
+    captured.clear()
+    original_warning = QMessageBox.warning
+    warned = []
+    QMessageBox.warning = staticmethod(
+        lambda *a, **k: warned.append(a[2] if len(a) > 2 else ""))
+    try:
+        shell._flash_many([("boot", "D:/nope/not-exist.img")])
+    finally:
+        QMessageBox.warning = original_warning
+    check("镜像不存在时不执行命令",
+          "cmds" not in captured and warned, str(warned[:1]))
+
     # ---- 历史可删除：以前历史只能增不能减，输错一条永远赖着 ----
     check("有删除历史按钮", hasattr(shell, "debug_shell_forget"))
     cmd.clear()

@@ -213,3 +213,67 @@ a.datas = [item for item in a.datas if _skip_binary(item)]
    **不再**惰性解析（避免遍历时把页面全建出来）。需要真实页面时用 `pages[key]`。
 3. **`layout_min_size` 缓存**：若将来调整页面布局导致最小尺寸变化，
    需要清掉 `DisplayTools.json` 里的这一项让它重新测量。
+
+---
+
+## 八、第二轮排查（v3.2.28 之后）
+
+用户反馈「还有点卡」，于是把「导入链 / 事件循环 / 分区切换」全量量了一遍。
+
+### 8.1 事件循环空闲时是健康的
+
+3 秒窗口内每 16ms 打一次点：
+
+| 指标 | 值 |
+| --- | --- |
+| 采样次数 | 185 |
+| 中位间隔 | 15.0 ms |
+| 最大间隔 | 35.4 ms |
+| 超过 50ms 的卡顿 | **0 次** |
+
+结论：**空闲状态下没有卡顿**，之前的感觉来自「首次进入某页面/分区」的一次性构建。
+
+### 8.2 分区切换：首见贵、之后便宜
+
+| 分区 | 控件数 | 首次切换 | 预热后再切 |
+| --- | --- | --- | --- |
+| device | 53 | 95.6 ms | 11 ms |
+| display | 179 | 101.0 ms | 9 ms（反复切 1ms） |
+| files | 33 | 87.0 ms | 6.5 ms |
+| perf | 72 | 73.8 ms | 9 ms |
+| touch | 64 | 42.3 ms | — |
+| sitepack | 42 | 37.8 ms | — |
+| log | 31 | 0.1 ms | 0.2 ms |
+
+拆开看 `show_section` 的每一步：`setCurrentWidget` 0.5~1.4ms、
+`updateGeometry` 0ms、`_fit_content` 0~0.1ms，耗时几乎全在
+**`processEvents()` 里的首次布局+绘制**。
+
+`minimumSizeHint()` 本身是一次性缓存（首次 15.7ms，之后 0.0ms），不是瓶颈。
+
+**结论**：这是 Qt 首次渲染某套控件的固有成本，不是代码低效。
+想消除只能「预建所有分区」——但那会让启动多花 400ms，不划算，保持现状。
+
+### 8.3 又抓到两处启动期无用导入
+
+用 `-X importtime` 逐项看，发现上一轮漏掉的两个：
+
+| 模块 | 耗时 | 何时真正需要 |
+| --- | --- | --- |
+| `download_dialog` | **67.7 ms** | 只在点「下载并重启」时 |
+| 其内部 `update_check` | 67.0 ms | 同上 |
+
+`download_dialog` 虽然延迟了 `update_check` 的**使用**，但它自己在
+`mainwindow.py` 顶部被 import，于是把 `update_check` 整条链又拉了起来——
+上一轮的 `_LazyModule` 因此完全失效。
+
+**修法**：把 `import download_dialog` 也挪到真正使用处（下载进度框创建前）。
+
+验证：启动后 `update_check._module is None`、`'download_dialog' not in sys.modules`，
+触发更新检查时才加载。
+
+### 8.4 第二轮验证
+
+- 离线自查 11 项全过
+- selftest 304 项全过
+- 延迟导入验证：启动后两个模块都未加载，触发后正常加载

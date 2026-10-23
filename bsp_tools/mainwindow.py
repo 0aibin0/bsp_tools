@@ -22,7 +22,6 @@ import app_config
 import app_runtime
 import command_palette
 import command_store
-import download_dialog
 import info_dialog
 import theme
 import toolchain
@@ -853,7 +852,19 @@ class MainWindow(QMainWindow):
 
     def show_changelog(self):
         self._info_box("更新日志",
-                       "v3.2.28 (当前)\n"
+                       "v3.2.29 (当前)\n"
+                       "  - 修上一版「延迟导入」没生效的问题：v3.2.28 把 update_check\n"
+                       "    改成用到才导入，但 download_dialog 在启动时就被 import，\n"
+                       "    而它内部又要 update_check，整条链（urllib.request + zipfile，\n"
+                       "    合计约 67ms）又被拉起来了，等于白做。\n"
+                       "    现在 download_dialog 也挪到真正创建下载进度框时才导入。\n"
+                       "    验证：启动后 update_check 未加载、download_dialog 不在\n"
+                       "    sys.modules；点「检查更新」时才加载。\n"
+                       "  - 顺带把启动链路量了一遍：空闲时事件循环健康（3 秒内 185 次\n"
+                       "    采样，中位 15ms，无超过 50ms 的卡顿）；常用工具页各分区\n"
+                       "    首次切换 37~101ms 是 Qt 首次渲染的固有成本，预热后 1~11ms，\n"
+                       "    不再改动。\n\n"
+                       "v3.2.28 (2026-10-23)\n"
                        "  - 整体提速（实测主窗口构造 1063ms → 333ms，切页 173~335ms →\n"
                        "    2~3ms，exe 体积 37.3MB → 23.9MB）：\n"
                        "      · 页面改成「首次访问才创建」——以前启动时把 4 个页面全建完，\n"
@@ -1483,6 +1494,9 @@ class MainWindow(QMainWindow):
         self._update_downloader = downloader
 
         # 下载期间一直开着进度框（不是 1.5 秒就消失的浮层）
+        # download_dialog 延迟到这里导入：它连带 update_check + urllib，
+        # 启动阶段完全用不到（只在真正下载时才需要）。
+        import download_dialog
         progress_dialog = download_dialog.DownloadDialog(
             os.path.basename(dest), expected, self)
 

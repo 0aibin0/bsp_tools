@@ -84,7 +84,9 @@ class FileManagerSection(QWidget):
 
         # ---- 文件列表 ----
         list_card = W.Card("目录内容")
-        self.status_label = QLabel("", list_card)
+        # 右上角显示「N 项 · /路径」，路径可能很长（/sdcard/Download/xxx/yyy），
+        # 用普通 QLabel 会把卡片挤到裁切。ElidedLabel 放不下时自动显示省略号。
+        self.status_label = W.ElidedLabel("", list_card)
         self.status_label.setStyleSheet(
             f"color: {theme.TEXT_FAINT}; font-size: 12px; background: transparent;")
         list_card.add_trailing(self.status_label)

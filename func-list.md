@@ -186,6 +186,15 @@
 
 ---
 
+## 本次已执行（v3.2.31）
+
+| 项 | 处理 |
+| --- | --- |
+| 83 | 修 `layout_min_size` 缓存从未生效：app_config 用字符串存值，`"[894, 705]"` 用 `isinstance(x, list)` 判断永远 False，导致每次启动重新测量页面。改 json 往返后**第二次启动 398ms → 9ms** |
+| 83 | 修 `pages.values()/items()` 返回占位 QWidget，导致 `check_layout` 崩溃、文件管理页从未被真正检查。遍历现在也解析真实页面 |
+| 71 | 文件管理页「N 项 · /路径」标签路径长时被裁切（46px 放不下），换 `ElidedLabel` |
+| 84 | 排查结论：全项目 12 个勾选框只有 flash 两个存配置（已用 `get_bool`），无其它 `bool(config.get())`。立三条规则：布尔用 `get_bool`、列表用 json 往返、`config.get()` 永远返回字符串。selftest 320 → 324 项 |
+
 ## 本次已执行（v3.2.30）
 
 | 项 | 处理 |

@@ -151,9 +151,12 @@ def check_size(app, window, width, height):
     window.resize(width, height)
     app.processEvents()
     issues = []
-    for key, page in window.pages.items():
+    # 页面是惰性创建的：pages.items() 拿到的是占位 QWidget，
+    # 必须先 nav.select 触发真实页面构建，再按 key 取回来审查。
+    for key in list(window.pages.keys()):
         window.nav.select(key)
         app.processEvents()
+        page = window.pages[key]
         audit_widget(page, issues, key)
         if key == "tools":
             for section_key, section in page.sections.items():

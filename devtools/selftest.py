@@ -21,7 +21,7 @@ from PyQt5.QtWidgets import QApplication          # noqa: E402
 
 import theme                                       # noqa: E402
 import tools_page                                  # noqa: E402
-from mainwindow import MainWindow                  # noqa: E402
+from mainwindow import MainWindow, _load_int_pair                  # noqa: E402
 from tools_log import LogAnalyzerSection, LEVEL_PATTERNS  # noqa: E402
 from tools_device import DeviceInfoSection         # noqa: E402
 from tools_files import FileManagerSection         # noqa: E402
@@ -331,6 +331,20 @@ def main():
     fav.reload()
 
     print("\n[6] 主窗口导航与状态栏")
+    # app_config 用字符串存一切值：写入列表会变成 "[894, 705]"，
+    # 读取时必须还原，不能 isinstance(x, list) 判断（那永远不成立）。
+    check("layout_min_size 缓存能往返",
+          _load_int_pair(json.dumps([894, 705])) == (894, 705),
+          str(_load_int_pair(json.dumps([894, 705]))))
+    check("layout_min_size 兼容逗号分隔老格式",
+          _load_int_pair("894,705") == (894, 705), str(_load_int_pair("894,705")))
+    check("layout_min_size 脏数据返回 None",
+          all(_load_int_pair(bad) is None
+              for bad in ("", "abc", "[1]", "null", "[-1,2]", None)),
+          "逐个验过")
+    check("pages.values() 返回真实页面（不是占位）",
+          all(type(p).__name__ != "QWidget" for p in window.pages.values()),
+          str([type(p).__name__ for p in window.pages.values()]))
     # 惰性创建：页面字典仍能按 key 取到真实页面（占位页会被替换）
     check("pages 取值自动解析成真实页面",
           all(not type(window.pages[k]).__name__ == "QWidget"

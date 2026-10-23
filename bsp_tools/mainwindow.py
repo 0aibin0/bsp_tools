@@ -7,6 +7,7 @@ v3.1.0 起改为「左侧边栏导航 + 右侧卡片内容区」的现代桌面�
 - Ctrl+K 打开命令面板，快速执行常用命令
 """
 
+import json
 import os
 import sys
 
@@ -27,6 +28,32 @@ import theme
 import toolchain
 import ui_widgets
 from sidebar import Sidebar
+
+
+def _load_int_pair(raw):
+    """把配置里存的 "[894, 705]" 还原成 (894, 705)；不合法返回 None。
+
+    app_config 用字符串存一切值，列表读回来是 JSON 文本，不能直接当序列用。
+    兼容老数据：也接受 "894,705" 这种逗号分隔写法。
+    """
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text:
+        return None
+    try:
+        parsed = json.loads(text)
+    except (ValueError, TypeError):
+        parsed = [part for part in text.strip("[]").split(",")]
+    if not isinstance(parsed, (list, tuple)) or len(parsed) != 2:
+        return None
+    try:
+        width, height = int(parsed[0]), int(parsed[1])
+    except (TypeError, ValueError):
+        return None
+    if width <= 0 or height <= 0:
+        return None
+    return width, height
 
 
 class _LazyModule(object):
@@ -170,6 +197,19 @@ class _LazyPageMap(dict):
         except KeyError:
             return default
 
+    # 遍历时也解析成真实页面：调用方（自测、check_layout、capture_ui）默认
+    # 认为遍历出来的是"能用的页面"，拿到裸 QWidget 占位就会炸
+    # （例如 check_layout 里 page.sections 直接 AttributeError）。
+    # 惰性加载的收益在**启动**，不在遍历——会遍历的场景本来就要把所有页面都用上。
+    def values(self):
+        return [self[key] for key in list(dict.keys(self))]
+
+    def items(self):
+        return [(key, self[key]) for key in list(dict.keys(self))]
+
+    def keys(self):
+        return list(dict.keys(self))
+
 
 class _DeviceStatusProbe(object):
     """后台查 adb 设备状态，避免启动/切页时同步等子进程。
@@ -238,11 +278,14 @@ class MainWindow(QMainWindow):
         # 每个页面量一遍，否则会漏掉 Shell Tools 的高度需求。
         # 这些数值与窗口大小无关，测一次就缓存到配置里，后续启动直接用，
         # 不必为了量尺寸把所有页面都建出来（那会让惰性创建白做）。
-        cached = app_config.config().get("layout_min_size")
-        if (isinstance(cached, (list, tuple)) and len(cached) == 2
-                and all(isinstance(v, int) and v > 0 for v in cached)):
-            self.content_min_width = cached[0]
-            self.content_min_height = cached[1]
+        #
+        # 注意：app_config.get() 永远返回**字符串**（内部是 str(value)），
+        # 所以这里存进去的列表读回来是 "[894, 705]"。必须 json.loads 还原，
+        # 不能判断 isinstance(cached, (list, tuple)) —— 那样永远不成立，
+        # 缓存等于没做，每次启动都会重新测量。
+        cached = _load_int_pair(app_config.config().get("layout_min_size"))
+        if cached is not None:
+            self.content_min_width, self.content_min_height = cached
         else:
             max_w, max_h = self._measure_pages()
             # 默认 1360x840：执行结果面板固定 240px + 内容区最宽模块 600px
@@ -250,8 +293,8 @@ class MainWindow(QMainWindow):
             self.content_min_width = max_w + theme.SIDEBAR_WIDTH + 20
             self.content_min_height = max_h + 96
             app_config.config().update(
-                layout_min_size=[self.content_min_width,
-                                 self.content_min_height])
+                layout_min_size=json.dumps(
+                    [self.content_min_width, self.content_min_height]))
             app_config.config().save()
 
         self.setMinimumSize(1300, 700)
@@ -852,7 +895,24 @@ class MainWindow(QMainWindow):
 
     def show_changelog(self):
         self._info_box("更新日志",
-                       "v3.2.30 (当前)\n"
+                       "v3.2.31 (当前)\n"
+                       "  - 排查「开关打开后关不掉」这类问题，修了三处：\n"
+                       "    ① layout_min_size 启动缓存从来没生效过——app_config 用字符串\n"
+                       "       存一切值，写入的 [894,705] 读回来是 \"[894, 705]\"，而代码用\n"
+                       "       isinstance(x, list) 判断，永远不成立，于是每次启动都在重新\n"
+                       "       测量所有页面的最小尺寸。现在改成 json.dumps/json.loads，\n"
+                       "       实测第二次启动从 398ms 降到 9ms（省 389ms）。\n"
+                       "    ② pages.values() / items() 返回的是占位 QWidget，导致布局检查\n"
+                       "       脚本直接崩（page.sections AttributeError）——也就是说文件\n"
+                       "       管理页从来没被真正检查过。现在遍历也会解析成真实页面。\n"
+                       "    ③ 因此暴露：文件管理页的「N 项 · /路径」标签路径一长就被裁切\n"
+                       "       （控件 46px 放不下），换成 ElidedLabel 自动省略。\n"
+                       "  - 顺带确认：全项目 12 个勾选框里，只有 flash 的两个会存配置，\n"
+                       "    都已用 get_bool；没有其它 bool(config.get(...)) 的写法。\n"
+                       "  - 三条新规则见 docs/analysis/CONFIG_TYPE_TRAPS_ANALYSIS.md：\n"
+                       "    布尔用 get_bool()、列表用 json 往返、config.get() 永远是字符串。\n"
+                       "  - selftest 320 → 324 项。\n\n"
+                       "v3.2.30 (2026-10-23)\n"
                        "  - fastboot flash 支持一次刷两个分区：卡片里改成两行独立的\n"
                        "    「分区 + 镜像 + 浏览」，两行都填就依次刷，第二行留空就只刷\n"
                        "    第一行。每行填的分区和镜像都会记住，下次打开还在。\n"

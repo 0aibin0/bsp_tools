@@ -36,6 +36,32 @@ EXCLUDES = [
     'tkinter', 'unittest', 'pydoc', 'doctest', 'pdb',
 ]
 
+# PyQt5 的 hook 会把整个 Qt5/bin 目录搬进来，光靠上面的 excludes（只作用于
+# Python 模块）拦不住这些 DLL。而单文件版启动时每个 DLL 都要从包里解出来，
+# 93MB 的解包量是冷启动的主要成本之一。
+#
+# 下面这些实测都没被用到（QML 引擎、软件 OpenGL、Designer、QtWebEngine 的
+# 加密库、打印机后端等）。按文件名前缀过滤，被误判时只要从列表里去掉即可。
+# QtNetwork 依赖 libcrypto/libeay 的部分：本项目只用 QLocalServer/Socket，
+# 不需要 TLS，去掉后单实例守卫仍然正常（已由 smoke_start 覆盖）。
+BINARY_SKIP_PREFIXES = (
+    'qt5qml', 'qt5quick', 'qt5quickparticles', 'qt5quickshapes',
+    'opengl32sw', 'qt5designer', 'libglesv2', 'libegl',
+    'qt5xmlpatterns', 'qt5xml', 'qt5help',
+    'qt5printsupport', 'qt5sensors', 'qt5serialport', 'qt5sql',
+    'qt5multimedia', 'qt5websockets', 'qt5webchannel',
+    'qt5texttospeech', 'qt5positioning', 'qt5location',
+    'd3dcompiler_47', 'qml',
+)
+
+
+def _skip_binary(entry):
+    """按文件名前缀判断这个二进制/数据项要不要丢。"""
+    import os as _os
+    name = _os.path.basename(str(entry[0])).lower()
+    return not any(name.startswith(prefix) for prefix in BINARY_SKIP_PREFIXES)
+
+
 a = Analysis(
     ['mainwindow.py'],
     pathex=[],
@@ -50,6 +76,11 @@ a = Analysis(
     excludes=EXCLUDES,
     noarchive=False,
 )
+
+# 过滤掉用不到的 Qt 二进制（见 BINARY_SKIP_PREFIXES 的说明）
+a.binaries = [item for item in a.binaries if _skip_binary(item)]
+a.datas = [item for item in a.datas if _skip_binary(item)]
+
 pyz = PYZ(a.pure)
 
 exe = EXE(

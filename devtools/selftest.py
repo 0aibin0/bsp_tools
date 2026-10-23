@@ -331,6 +331,13 @@ def main():
     fav.reload()
 
     print("\n[6] 主窗口导航与状态栏")
+    # 惰性创建：页面字典仍能按 key 取到真实页面（占位页会被替换）
+    check("pages 取值自动解析成真实页面",
+          all(not type(window.pages[k]).__name__ == "QWidget"
+              for k in ("tools", "shell", "initcode", "transform")
+              if k in window.pages),
+          str({k: type(v).__name__ for k, v in
+               [(k, window.pages[k]) for k in window.pages]}))
     for key in ("tools", "shell", "initcode", "transform"):
         window.nav.select(key)
         app.processEvents()

@@ -138,7 +138,7 @@ run_checks.bat device     # 再加上真机相关的 4 项（要连板子）
 .venv\Scripts\python.exe devtools\check_layout.py      # 布局健康检查：多种窗口尺寸下检测重叠/压缩/越界
 .venv\Scripts\python.exe devtools\check_panel_width.py # 右侧两个面板的文本框必须都是 240px（固定，不随窗口变）
 .venv\Scripts\python.exe devtools\check_wraplabel.py   # 自动换行标签高度是否够（inspect_ui 的盲区）
-.venv\Scripts\python.exe devtools\selftest.py          # 逻辑自测 299 项（不需要连接设备）
+.venv\Scripts\python.exe devtools\selftest.py          # 逻辑自测 304 项（不需要连接设备）
 .venv\Scripts\python.exe devtools\check_theme.py       # 浅色/深色令牌完整性与残留检查
 .venv\Scripts\python.exe devtools\check_timing.py      # 时序/带宽公式 + 文本解析 + DCS 包构造
 .venv\Scripts\python.exe devtools\check_multidevice.py # 多设备 -s 注入（保证不会出现两个 -s）

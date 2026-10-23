@@ -137,6 +137,30 @@ class StreamThread(QThread):
         kill_process_tree(self._process)
 
 
+def probe_device():
+    """查询设备连接状态，返回 (是否在线, 描述)。
+
+    adb 可能是 PATH 里的，也可能是设置里指定的全路径（同事机器上没装
+    platform-tools 时靠这个），所以统一走 toolchain。
+
+    独立函数（不挂在页面上）：主窗口要在页面还没创建时就能后台探测，
+    不能在 UI 线程里同步等 adb 子进程。
+    """
+    try:
+        out = subprocess.run(
+            f'{toolchain.adb_shell()} devices', shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, timeout=6).stdout.decode(errors='replace')
+    except Exception as e:
+        return False, f"adb 不可用（{e}）"
+    devices = [ln for ln in out.splitlines()[1:]
+               if ln.strip() and not ln.startswith('*')]
+    if not devices:
+        return False, "未连接设备"
+    names = [ln.split('\t')[0].strip() for ln in devices]
+    return True, f"{names[0]}" + (f" +{len(names) - 1}" if len(names) > 1 else "")
+
+
 class ShellToolsPage(BaseToolPage, Ui_ShellTools):
     def __init__(self, parent=None):
         super(ShellToolsPage, self).__init__(parent)
@@ -271,24 +295,8 @@ class ShellToolsPage(BaseToolPage, Ui_ShellTools):
         self._exec_with_result(command, f"{label} 完成")
 
     def check_device_connected(self):
-        """查询设备连接状态，返回 (是否在线, 描述)。
-
-        adb 可能是 PATH 里的，也可能是设置里指定的全路径（同事机器上没装
-        platform-tools 时靠这个），所以统一走 toolchain。
-        """
-        try:
-            out = subprocess.run(
-                f'{toolchain.adb_shell()} devices', shell=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT, timeout=6).stdout.decode(errors='replace')
-        except Exception as e:
-            return False, f"adb 不可用（{e}）"
-        devices = [ln for ln in out.splitlines()[1:]
-                   if ln.strip() and not ln.startswith('*')]
-        if not devices:
-            return False, "未连接设备"
-        names = [ln.split('\t')[0].strip() for ln in devices]
-        return True, f"{names[0]}" + (f" +{len(names) - 1}" if len(names) > 1 else "")
+        """查询设备连接状态（页面上的调用入口，逻辑见模块级 probe_device）。"""
+        return probe_device()
 
     def _on_command_done(self, exit_code, output):
         self._set_busy(False)
@@ -913,13 +921,54 @@ class ShellToolsPage(BaseToolPage, Ui_ShellTools):
         self._exec_with_result(f'adb pull "{remote}" "{local}"', "pull 完成")
 
     def on_page_shown(self):
-        """页面被主窗口切换到时刷新设备状态。"""
+        """页面被主窗口切换到时刷新设备状态。
+
+        原来这里同步跑 `adb devices`——adb 首次启动要 100~400ms，
+        切页时整窗都会卡住。改成后台线程查，查完再更新状态栏。
+        """
         self._apply_split_sizes()
         if not self._busy:
-            ok, desc = self.check_device_connected()
-            window = self.window()
-            if hasattr(window, 'set_device_status'):
-                window.set_device_status(f"设备：{desc}", ok)
+            self._refresh_device_async()
+
+    def _refresh_device_async(self):
+        """后台查设备状态，避免切页时同步阻塞 UI。"""
+        import threading
+
+        # 同一个页面并发只留一个探测，切页很快时不会堆积一堆 adb 进程
+        if getattr(self, "_device_probe", None) is not None:
+            return
+
+        def work():
+            try:
+                ok, desc = self.check_device_connected()
+            except Exception as exc:                          # noqa: BLE001
+                ok, desc = False, f"查询失败（{exc}）"
+            self._device_probe_result = (ok, desc)
+
+        thread = threading.Thread(target=work, daemon=True,
+                                  name="device-probe")
+        self._device_probe = thread
+        thread.start()
+
+        # 结果回到主线程再碰 UI（Qt 控件不能跨线程操作）
+        QTimer.singleShot(120, self._poll_device_probe)
+
+    def _poll_device_probe(self):
+        """等后台探测结束，拿到结果就更新状态栏。"""
+        thread = getattr(self, "_device_probe", None)
+        if thread is None:
+            return
+        if thread.is_alive():
+            QTimer.singleShot(120, self._poll_device_probe)
+            return
+        self._device_probe = None
+        result = getattr(self, "_device_probe_result", None)
+        if not result:
+            return
+        ok, desc = result
+        window = self.window()
+        if hasattr(window, "set_device_status"):
+            window.set_device_status(f"设备：{desc}", ok)
 
     def showEvent(self, event):
         """页面第一次真正显示时再补一次分栏。

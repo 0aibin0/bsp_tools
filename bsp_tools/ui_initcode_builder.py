@@ -2,6 +2,7 @@
 
 from PyQt5 import QtCore, QtGui, QtWidgets
 
+import theme
 import ui_widgets
 
 
@@ -22,10 +23,12 @@ class Ui_InitcodeBuilder(object):
         self.textEdit = QtWidgets.QTextEdit(MainWindow)
         self.textEdit.setObjectName("textEdit")
         self.textEdit.setMinimumHeight(260)
+        ui_widgets.mark_code_view(self.textEdit)
         self.horizontalLayout.addWidget(self.textEdit)
         self.textEdit_2 = QtWidgets.QTextEdit(MainWindow)
         self.textEdit_2.setObjectName("textEdit_2")
         self.textEdit_2.setMinimumHeight(260)
+        ui_widgets.mark_code_view(self.textEdit_2)
         self.horizontalLayout.addWidget(self.textEdit_2)
         self.verticalLayout.addLayout(self.horizontalLayout)
 
@@ -126,14 +129,17 @@ class Ui_InitcodeBuilder(object):
         self.reverse_input = QtWidgets.QTextEdit(self.reverse_card)
         self.reverse_input.setObjectName("reverse_input")
         self.reverse_input.setMinimumSize(196, 76)
+        ui_widgets.mark_code_view(self.reverse_input)
         self.reverse_list = QtWidgets.QTextEdit(self.reverse_card)
         self.reverse_list.setObjectName("reverse_list")
         self.reverse_list.setReadOnly(True)
         self.reverse_list.setMinimumSize(196, 76)
+        ui_widgets.mark_code_view(self.reverse_list)
         self.reverse_output = QtWidgets.QTextEdit(self.reverse_card)
         self.reverse_output.setObjectName("reverse_output")
         self.reverse_output.setReadOnly(True)
         self.reverse_output.setMinimumSize(196, 76)
+        ui_widgets.mark_code_view(self.reverse_output)
         for column_title, column_widget in (("输入 initcode", self.reverse_input),
                                             ("解析清单", self.reverse_list),
                                             ("转换输出", self.reverse_output)):

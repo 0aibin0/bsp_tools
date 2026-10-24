@@ -10,6 +10,7 @@ from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
 
 import brightness_map
 import theme
+import ui_widgets
 
 DEFAULT_WIDTH = 860
 DEFAULT_HEIGHT = 560
@@ -62,6 +63,7 @@ class BrightnessMapDialog(QDialog):
         self.input_edit = QPlainTextEdit(self)
         self.input_edit.setPlainText(SAMPLE)
         self.input_edit.setMinimumWidth(320)
+        ui_widgets.mark_code_view(self.input_edit)
         left.addWidget(self.input_edit)
         columns.addLayout(left, 1)
 
@@ -71,6 +73,7 @@ class BrightnessMapDialog(QDialog):
         self.output_edit = QPlainTextEdit(self)
         self.output_edit.setReadOnly(True)
         self.output_edit.setMinimumWidth(380)
+        ui_widgets.mark_code_view(self.output_edit)
         right.addWidget(self.output_edit)
         columns.addLayout(right, 1)
 

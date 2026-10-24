@@ -345,6 +345,25 @@ def main():
     check("pages.values() 返回真实页面（不是占位）",
           all(type(p).__name__ != "QWidget" for p in window.pages.values()),
           str([type(p).__name__ for p in window.pages.values()]))
+
+    # 代码区必须等宽；界面主体保持雅黑。
+    # 注意：样式表里的 QWidget{font-family} 会覆盖 setFont()，
+    # 所以这些框靠 code="true" 属性走样式表，不能靠 setFont。
+    code_views = [
+        ("initcode 输入", window.pages["initcode"].textEdit),
+        ("initcode 输出", window.pages["initcode"].textEdit_2),
+        ("initcode 反解", window.pages["initcode"].reverse_input),
+        ("transform 输入", window.pages["transform"].textEdit),
+        ("transform 输出", window.pages["transform"].textEdit_2),
+    ]
+    for label, widget in code_views:
+        family = widget.font().family()
+        check("{} 用等宽字体".format(label),
+              "Mono" in family or "Consolas" in family,
+              "{} (code 属性={})".format(family, widget.property("code")))
+    check("界面主体仍是雅黑（没被等宽顶掉）",
+          "YaHei" in window.pageTitle.font().family(),
+          window.pageTitle.font().family())
     # 惰性创建：页面字典仍能按 key 取到真实页面（占位页会被替换）
     check("pages 取值自动解析成真实页面",
           all(not type(window.pages[k]).__name__ == "QWidget"

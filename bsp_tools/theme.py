@@ -161,7 +161,7 @@ def current_mode():
 
 # 版本信息
 APP_NAME = "DisplayTools"
-APP_VERSION = "v3.2.31"
+APP_VERSION = "v3.2.32"
 APP_AUTHOR = "a1bin"
 
 # ===== 尺寸 =====
@@ -186,11 +186,23 @@ def app_font():
 
 
 def mono_font(size=10):
-    """等宽字体（日志、hex 等场景）"""
+    """等宽字体（日志、hex、initcode 等场景）。
+
+    字体链：Cascadia Mono → Consolas → 雅黑。前两个是等宽（英文/数字/十六进制
+    能对齐），中文没有等宽字形，交给后面的雅黑，避免回退到系统默认宋体。
+
+    用 setFamilies（Qt 5.13+）而不是 setFamily：后者只接受**单个**字体名，
+    中文就没法指定回退，会落到 Qt 默认字体上。
+    """
     font = QFont()
-    font.setFamily("Consolas")
+    families = ["Cascadia Mono", "Consolas", "Microsoft YaHei UI"]
+    if hasattr(font, "setFamilies"):
+        font.setFamilies(families)
+    else:                                   # 老版本 Qt 的兜底
+        font.setFamily(families[0])
     font.setPointSize(size)
     font.setStyleHint(QFont.Monospace)
+    font.setStyleStrategy(QFont.PreferAntialias)
     return font
 
 
@@ -749,6 +761,17 @@ QTextBrowser#logView, QPlainTextEdit#logView {{
     font-family: {MONO_FAMILY};
     font-size: 12px;
     color: {LOG_TEXT};
+}}
+
+/* ================= 代码 / 十六进制输入输出 =================
+   这些框里是 initcode 字节、LK 序列、QCOM 数组，等宽才对得齐。
+   必须在样式表里指定：QWidget 那条 font-family 会覆盖控件的
+   setFont()，光在代码里 setFont 是不生效的。
+   用动态属性 code="true" 标记，而不是改 objectName（后者会破坏
+   现有按名字定位控件的代码）。 */
+QTextEdit[code="true"], QPlainTextEdit[code="true"] {{
+    font-family: {MONO_FAMILY};
+    font-size: 12px;
 }}
 
 /* ================= 滚动条 ================= */

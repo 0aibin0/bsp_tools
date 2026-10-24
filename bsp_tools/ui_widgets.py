@@ -183,6 +183,24 @@ def separator(parent=None):
     return line
 
 
+def mark_code_view(widget):
+    """把控件标记成「代码框」：样式表据此换成等宽字体。
+
+    必须在样式表里做，不能在代码里 setFont：主题里的
+    `QWidget { font-family: ... }` 会覆盖控件自己的 setFont()，
+    直接 setFont 没有任何效果（试过，无效）。
+
+    用动态属性而不是改 objectName：objectName 被大量代码用来定位控件
+    （findChild / 自测断言），改名会连带破坏那些地方。
+    """
+    widget.setProperty("code", True)
+    # 属性在控件已 polish 之后设置时，需要手动触发样式重算
+    style = widget.style()
+    style.unpolish(widget)
+    style.polish(widget)
+    return widget
+
+
 def scrollable(inner, parent=None):
     """把控件包进竖向滚动区，窗口变小时依然可用。"""
     area = QScrollArea(parent)

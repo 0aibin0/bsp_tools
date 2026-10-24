@@ -7,6 +7,9 @@
 
 from PyQt5 import QtCore, QtWidgets
 
+import theme
+import ui_widgets
+
 
 def build_transform_ui(host, *, input_title="输入", input_hint="",
                        output_title="输出", output_hint="转换结果（只读）",
@@ -42,6 +45,8 @@ def build_transform_ui(host, *, input_title="输入", input_hint="",
     text_edit = QtWidgets.QTextEdit(input_card)
     text_edit.setObjectName("textEdit")
     text_edit.setMinimumHeight(input_height)
+    # 输入输出都是十六进制/命令行文本，等宽才对齐（也方便逐列核对）
+    ui_widgets.mark_code_view(text_edit)
     input_layout.addWidget(text_edit)
     columns.addWidget(input_card)
 
@@ -59,6 +64,7 @@ def build_transform_ui(host, *, input_title="输入", input_hint="",
     text_edit_2 = QtWidgets.QTextEdit(output_card)
     text_edit_2.setObjectName("textEdit_2")
     text_edit_2.setMinimumHeight(input_height)
+    ui_widgets.mark_code_view(text_edit_2)
     output_layout.addWidget(text_edit_2)
     columns.addWidget(output_card)
 

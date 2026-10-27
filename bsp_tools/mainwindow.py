@@ -789,11 +789,14 @@ class MainWindow(QMainWindow):
 
     def set_device_status(self, text, ok=True):
         # 序列号很长（如 99022393342169），状态栏在 1400px 窗口下会被挤，
-        # 超过 12 字符时截断显示，完整值放 tooltip。
-        if len(text) > 14:
-            text = text[:12] + "…"
+        # 超过 14 字符时截断**显示**，完整值放 tooltip。
+        # 注意：之前是先截断 text 再拿去 setToolTip，导致 tooltip 也是省略号，
+        # 长序列号根本看不到全的。这里保留原值给 tooltip。
+        full = text
+        if len(full) > 14:
+            text = full[:12] + "…"
         self.deviceLabel.setText(f"● {text}")
-        self.deviceLabel.setToolTip(text)
+        self.deviceLabel.setToolTip(full)
         self.deviceLabel.setProperty("tone", "ok" if ok else "muted")
         self.deviceLabel.style().unpolish(self.deviceLabel)
         self.deviceLabel.style().polish(self.deviceLabel)
@@ -895,7 +898,20 @@ class MainWindow(QMainWindow):
 
     def show_changelog(self):
         self._info_box("更新日志",
-                       "v3.2.33 (当前)\n"
+                       "v3.2.34 (当前)\n"
+                       "  - fastboot flash 卡片新增 devices 按钮（fastboot devices）：\n"
+                       "    烧录前确认设备在 fastboot 模式，不用等 flash 报\n"
+                       "    \"no devices/emulators found\"。按钮排布：Flash ·\n"
+                       "    bootloader · devices · reboot，正好是操作顺序。\n"
+                       "  - 查询结果会同步到状态栏：有设备显示序列号（多台显示 +N）、\n"
+                       "    没设备显示「未连接（fastboot）」、失败显示「查询失败」。\n"
+                       "  - 修两个问题：\n"
+                       "    · fastboot 的 error 行会被当成设备名（状态栏显示「设备：error:」），\n"
+                       "      现在过滤 error / fastboot: / < waiting > / * daemon * 这些行；\n"
+                       "    · 状态栏 tooltip 一直是省略号——原先把截断后的文字设给\n"
+                       "      toolTip，长序列号根本看不到完整值。现在保留原值。\n"
+                       "  - selftest 340 → 348 项。\n\n"
+                       "v3.2.33 (2026-10-27)\n"
                        "  - fastboot flash 的两个分区行前面各加了一个勾选框：勾上就刷\n"
                        "    这一行，不勾就跳过。比原来「按填没填来判断」直观——\n"
                        "    取消勾选时填好的分区和镜像会保留，下次勾上直接刷。\n"

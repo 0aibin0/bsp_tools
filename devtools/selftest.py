@@ -26,6 +26,7 @@ from tools_log import LogAnalyzerSection, LEVEL_PATTERNS  # noqa: E402
 from tools_device import DeviceInfoSection         # noqa: E402
 from tools_files import FileManagerSection         # noqa: E402
 import tools_display as display_mod                # noqa: E402
+import shell_tools as shell_module                 # noqa: E402
 import brightness_map as bmap                      # noqa: E402
 from tools_perf import PerfSection                 # noqa: E402
 
@@ -1600,6 +1601,50 @@ def main():
               shell.flash_rows[1]["check"].isChecked(),
               app_config.config().get("flash_check_2")))
     check("「跳过未填的行」已移除", not hasattr(shell, "flash_skip_missing"))
+
+    # fastboot devices 按钮：烧录前确认设备在 fastboot 模式
+    check("有 fastboot devices 按钮", hasattr(shell, "fb_devices"))
+    check("devices 按钮文案正确", shell.fb_devices.text() == "devices",
+          shell.fb_devices.text())
+    check("devices 按钮排在 reboot 左边",
+          shell.fb_devices.x() < shell.fb_reboot.x(),
+          "devices=%d reboot=%d" % (shell.fb_devices.x(),
+                                    shell.fb_reboot.x()))
+    check("devices 按钮有对应的处理函数",
+          callable(getattr(shell, "fastbootdevices", None)))
+
+    # fastboot devices 输出解析：要能挑出序列号，也要过滤提示/错误行
+    parse_fb = shell_module.parse_fastboot_devices
+    check("解析 fastboot devices：单台",
+          parse_fb("99022393342169\tfastboot\n") == ["99022393342169"],
+          str(parse_fb("99022393342169\tfastboot\n")))
+    check("解析 fastboot devices：多台",
+          parse_fb("A\tfastboot\nB\tfastboot\n") == ["A", "B"],
+          str(parse_fb("A\tfastboot\nB\tfastboot\n")))
+    check("解析 fastboot devices：过滤 error 行",
+          parse_fb("error: no devices/emulators found\n") == []
+          and parse_fb("fastboot: error: cannot load\n") == [],
+          "error 行被当成设备名的 bug 已修")
+    check("解析 fastboot devices：过滤等待提示",
+          parse_fb("< waiting for any device >\n") == []
+          and parse_fb("* daemon started *\n") == [],
+          "提示行已过滤")
+
+    # 状态栏联动
+    shell._apply_fastboot_devices(0, "G0B61W026373000M\tfastboot\n")
+    check("devices 结果同步到状态栏",
+          "G0B61W026" in window.deviceLabel.text(),
+          window.deviceLabel.text())
+    check("状态栏 tooltip 保留完整序列号（不截断）",
+          "…" not in window.deviceLabel.toolTip(),
+          window.deviceLabel.toolTip())
+    shell._apply_fastboot_devices(0, "")
+    check("没有 fastboot 设备时状态栏提示未连接",
+          "未连接" in window.deviceLabel.text(), window.deviceLabel.text())
+    shell._apply_fastboot_devices(1, "error: something wrong")
+    check("查询失败时不把原始错误贴进状态栏",
+          "error" not in window.deviceLabel.text().lower(),
+          window.deviceLabel.text())
 
     # 两行都填 + 都勾 → 两个分区
     for row, (part, img) in zip(shell.flash_rows, (("uboot_a", "a.img"),

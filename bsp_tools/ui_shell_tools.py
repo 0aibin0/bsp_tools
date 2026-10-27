@@ -323,7 +323,7 @@ class Ui_ShellTools(object):
         control_row.addStretch(1)
         flash_layout.addLayout(control_row)
 
-        # 最后一行：Flash + fastboot mode/reboot
+        # 最后一行：Flash + fastboot mode / devices / reboot
         flash_row = QtWidgets.QHBoxLayout()
         flash_row.setSpacing(5)
         self.flash_btn = self._button(
@@ -334,6 +334,11 @@ class Ui_ShellTools(object):
             self.groupBox_flash, "fb_mode", "bootloader", height=28)
         self.fb_mode.setToolTip("adb reboot bootloader")
         flash_row.addWidget(self.fb_mode, 1)
+        # 烧录前先确认设备在 fastboot 模式：没列出来就别白等 flash 失败
+        self.fb_devices = self._button(
+            self.groupBox_flash, "fb_devices", "devices", height=28)
+        self.fb_devices.setToolTip("fastboot devices（确认设备在 fastboot 模式）")
+        flash_row.addWidget(self.fb_devices)
         self.fb_reboot = self._button(
             self.groupBox_flash, "fb_reboot", "reboot", height=28)
         flash_row.addWidget(self.fb_reboot)
@@ -572,6 +577,7 @@ class Ui_ShellTools(object):
         self.flash_browse_2.setText(t(""))
         self.flash_erase.setText(t("先 erase"))
         self.fb_mode.setText(t("fastboot mode"))
+        self.fb_devices.setText(t("devices"))
         self.fb_reboot.setText(t("reboot"))
         self.groupBox_6.setTitle(t("func"))
         self.func_power.setText(t("power-key"))

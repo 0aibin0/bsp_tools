@@ -161,6 +161,38 @@ def probe_device():
     return True, f"{names[0]}" + (f" +{len(names) - 1}" if len(names) > 1 else "")
 
 
+def parse_fastboot_devices(output):
+    """从 `fastboot devices` 的输出里取设备序列号列表。
+
+    典型输出（每行一台）：
+
+        99022393342169	fastboot
+        G0B61W026373000M	fastboot
+
+    要过滤掉的非设备行（这些都是 fastboot 的提示/错误，不是序列号）：
+      - 空行
+      - `* daemon ...` 之类的提示
+      - `< waiting for any device >`
+      - `error: ...` / `fastboot: error: ...` 错误
+    """
+    serials = []
+    for line in (output or "").splitlines():
+        line = line.strip()
+        if not line or line.startswith("*") or line.startswith("<"):
+            continue
+        lowered = line.lower()
+        if lowered.startswith("error") or lowered.startswith("fastboot:"):
+            continue
+        parts = line.split()
+        if not parts:
+            continue
+        serial = parts[0].strip()
+        if not serial or serial.lower() == "error":
+            continue
+        serials.append(serial)
+    return serials
+
+
 class ShellToolsPage(BaseToolPage, Ui_ShellTools):
     def __init__(self, parent=None):
         super(ShellToolsPage, self).__init__(parent)
@@ -229,6 +261,7 @@ class ShellToolsPage(BaseToolPage, Ui_ShellTools):
         self.flash_btn.clicked.connect(self.on_flash)
         self.fb_mode.clicked.connect(self.adbrebootbootloader)
         self.fb_reboot.clicked.connect(self.fastbootreboot)
+        self.fb_devices.clicked.connect(self.fastbootdevices)
         # func（背光滑块与 pull 按钮已移除：pull 与侧边栏「截图并保存」重复）
         self.func_power.clicked.connect(self.on_power)
         self.func_screencap.clicked.connect(self.on_screencap)
@@ -363,7 +396,12 @@ class ShellToolsPage(BaseToolPage, Ui_ShellTools):
         except Exception:
             pass
 
-    def _exec_with_result(self, command, success_msg):
+    def _exec_with_result(self, command, success_msg, on_result=None):
+        """执行一条命令并把结果贴到日志面板。
+
+        on_result（可选）：(exit_code, output) 回调，供调用方解析输出后更新
+        别处 UI（例如 fastboot devices 把设备名同步到状态栏）。
+        """
         if self._busy:
             return
         self._set_busy(True)
@@ -380,6 +418,11 @@ class ShellToolsPage(BaseToolPage, Ui_ShellTools):
                 self.append_text(f"{success_msg}\n")
             else:
                 self.append_text(f"[警告] 命令退出码: {exit_code}\n")
+            if on_result is not None:
+                try:
+                    on_result(exit_code, output)
+                except Exception as exc:                    # noqa: BLE001
+                    self.append_text(f"[警告] 更新界面失败: {exc}\n")
 
         self._run_async(command, on_done)
 
@@ -470,6 +513,39 @@ class ShellToolsPage(BaseToolPage, Ui_ShellTools):
 
     def fastbootreboot(self):
         self._exec_with_result('fastboot reboot', "设备重启成功")
+
+    def fastbootdevices(self):
+        """列出 fastboot 模式下的设备，并把结果同步到状态栏。
+
+        烧录前先看一眼：设备没进 bootloader 时 flash 会直接报
+        "no devices/emulators found"，不如先确认。
+        """
+        self._exec_with_result(
+            'fastboot devices', "fastboot 设备列表",
+            on_result=self._apply_fastboot_devices)
+
+    def _apply_fastboot_devices(self, exit_code, output):
+        """从 `fastboot devices` 输出里取设备名，更新状态栏。
+
+        fastboot 的输出格式：`<序列号>\\tfastboot`（每行一台），
+        没有任何行就是没设备。
+        """
+        serials = parse_fastboot_devices(output)
+        window = self.window()
+        if not hasattr(window, "set_device_status"):
+            return
+        if serials:
+            text = serials[0] + (" +%d" % (len(serials) - 1)
+                                 if len(serials) > 1 else "")
+            window.set_device_status("设备：{}".format(text), True)
+            self.append_text("[状态栏] 已更新为 fastboot 设备：{}\n".format(text))
+        elif exit_code == 0:
+            window.set_device_status("设备：未连接（fastboot）", False)
+            self.append_text("[状态栏] 没有 fastboot 设备\n")
+        else:
+            # 失败时不要把原始错误贴进状态栏（太长），统一文案，细节留在日志
+            window.set_device_status("设备：fastboot 查询失败", False)
+            self.append_text("[状态栏] fastboot 查询失败，详见上方输出\n")
 
     def adbrebootautodloader_fun(self):
         self._exec_with_result('adb reboot autodloader', "设备已进入 Download 模式")

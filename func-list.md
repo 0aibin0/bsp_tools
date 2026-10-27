@@ -186,6 +186,16 @@
 
 ---
 
+## 本次已执行（v3.2.34）
+
+| 项 | 处理 |
+| --- | --- |
+| 75 | fastboot flash 卡片新增 **devices 按钮**（`fastboot devices`）：烧录前确认设备在 fastboot 模式。排布 Flash · bootloader · devices · reboot |
+| 75 | 查询结果**同步到状态栏**：有设备显示序列号（多台 `+N`）、无设备「未连接（fastboot）」、失败「查询失败」 |
+| — | 修 fastboot 的 `error:` 行被当成设备名（状态栏显示「设备：error:」），现过滤 error / fastboot: / `< waiting >` / `* daemon *` |
+| — | 修状态栏 tooltip 一直是省略号：原先把截断后的文字设给 toolTip，长序列号看不到完整值 |
+| 84 | selftest 336 → 348 项 |
+
 ## 本次已执行（v3.2.33）
 
 | 项 | 处理 |

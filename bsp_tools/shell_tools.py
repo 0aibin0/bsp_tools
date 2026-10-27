@@ -548,8 +548,11 @@ class ShellToolsPage(BaseToolPage, Ui_ShellTools):
             # 布尔值必须走 get_bool：app_config.get() 会把所有值转成字符串，
             # bool('False') 是 True，勾选状态就再也存不回去了。
             self.flash_erase.setChecked(config.get_bool('flash_erase', False))
-            self.flash_skip_missing.setChecked(
-                config.get_bool('flash_skip_missing', True))
+            # 勾选状态也记住：第一行默认勾上、第二行默认不勾
+            self.flash_rows[0]["check"].setChecked(
+                config.get_bool('flash_check_1', True))
+            self.flash_rows[1]["check"].setChecked(
+                config.get_bool('flash_check_2', False))
             self.debug_density_val.setText(config.get('density_val', ''))
             self.debug_printk_level.setCurrentText(config.get('printk_level', '8'))
             self.debug_shell_cmd.setCurrentText(config.get('shell_cmd', ''))
@@ -574,7 +577,8 @@ class ShellToolsPage(BaseToolPage, Ui_ShellTools):
             flash_partition_2=self.flash_rows[1]["partition"].currentText().strip(),
             flash_img_2=self.flash_rows[1]["image"].text().strip(),
             flash_erase=self.flash_erase.isChecked(),
-            flash_skip_missing=self.flash_skip_missing.isChecked(),
+            flash_check_1=self.flash_rows[0]["check"].isChecked(),
+            flash_check_2=self.flash_rows[1]["check"].isChecked(),
             density_val=self.debug_density_val.text().strip(),
             printk_level=self.debug_printk_level.currentText().strip(),
             shell_cmd=self.debug_shell_cmd.currentText().strip(),
@@ -662,38 +666,45 @@ class ShellToolsPage(BaseToolPage, Ui_ShellTools):
         self.save_config()
         row["partition"].setFocus()
 
-    def _filled_flash_rows(self):
-        """取出填了内容的行，返回 ([(分区, 镜像)], 只有一半的行数)。
+    def _checked_flash_rows(self):
+        """取出**勾选了**的行，返回 ([(分区, 镜像)], 勾了但没填全的行)。
 
-        「跳过未填的行」勾上时，只填一半的行会被忽略（不报错）；
-        不勾时要求每行都填全，否则提示。
+        刷不刷只看勾选框，不看填没填：勾上就必须填全（否则报错），
+        没勾就整行跳过——内容会留着，下次勾上能直接刷。
         """
         entries = []
-        half_filled = []
-        for row in self.flash_rows:
+        incomplete = []
+        for index, row in enumerate(self.flash_rows, 1):
+            if not row["check"].isChecked():
+                continue
             partition = row["partition"].currentText().strip()
             image = row["image"].text().strip()
-            if not partition and not image:
-                continue                      # 整行空着：本来就不刷
             if partition and image:
                 entries.append((partition, image))
             else:
-                half_filled.append(partition or image)
-        return entries, half_filled
+                missing = []
+                if not partition:
+                    missing.append("分区")
+                if not image:
+                    missing.append("镜像")
+                incomplete.append("第 {} 行缺{}".format(index, "、".join(missing)))
+        return entries, incomplete
 
     def on_flash(self):
-        """烧录：按两行控件里填的内容，依次刷每个分区。"""
-        entries, half_filled = self._filled_flash_rows()
+        """烧录：只刷勾选的行，依次执行。"""
+        entries, incomplete = self._checked_flash_rows()
 
-        if half_filled and not self.flash_skip_missing.isChecked():
+        if incomplete:
             QMessageBox.warning(
                 self, "参数不完整",
-                "这些行只填了一半（要分区和镜像都填）：\n"
-                + "\n".join(half_filled[:4]))
+                "勾选了但没填全（取消勾选可跳过这一行）：\n"
+                + "\n".join(incomplete[:4]))
             return
 
         if not entries:
-            QMessageBox.warning(self, "参数缺失", "请至少填一行分区和镜像")
+            QMessageBox.warning(
+                self, "没有选中分区",
+                "请先勾选要烧录的分区（每行左侧的勾选框）")
             return
 
         self.save_config()

@@ -1582,30 +1582,64 @@ def main():
           "配置={!r} 控件={}".format(
               app_config.config().get("flash_erase"),
               shell.flash_erase.isChecked()))
-    check("跳过未填的行默认勾选", shell.flash_skip_missing.isChecked())
+    check("每行前面都有勾选框",
+          all("check" in row for row in shell.flash_rows),
+          str([("check" in r) for r in shell.flash_rows]))
+    # 勾选状态是从配置读回来的（用户上次的选择），所以断言"读回一致"，
+    # 而不是硬性要求"默认不勾"——配置里存着上次的值。
+    check("第一行勾选状态与配置一致",
+          shell.flash_rows[0]["check"].isChecked()
+          == app_config.config().get_bool("flash_check_1", True),
+          "控件={} 配置={!r}".format(
+              shell.flash_rows[0]["check"].isChecked(),
+              app_config.config().get("flash_check_1")))
+    check("第二行勾选状态与配置一致",
+          shell.flash_rows[1]["check"].isChecked()
+          == app_config.config().get_bool("flash_check_2", False),
+          "控件={} 配置={!r}".format(
+              shell.flash_rows[1]["check"].isChecked(),
+              app_config.config().get("flash_check_2")))
+    check("「跳过未填的行」已移除", not hasattr(shell, "flash_skip_missing"))
 
-    # 两行都填 → 两个分区
+    # 两行都填 + 都勾 → 两个分区
     for row, (part, img) in zip(shell.flash_rows, (("uboot_a", "a.img"),
                                                    ("dtbo_a", "b.img"))):
         row["partition"].setCurrentText(part)
         row["image"].setText(img)
-    entries, half = shell._filled_flash_rows()
-    check("两行都填：读到两条", entries == [("uboot_a", "a.img"),
+        row["check"].setChecked(True)
+    entries, incomplete = shell._checked_flash_rows()
+    check("两行都勾：读到两条", entries == [("uboot_a", "a.img"),
                                             ("dtbo_a", "b.img")], str(entries))
-    check("两行都填：没有半填的行", half == [], str(half))
+    check("两行都勾：没有不完整的行", incomplete == [], str(incomplete))
 
-    # 第二行留空 → 只刷第一行
-    shell.flash_rows[1]["partition"].setCurrentText("")
+    # 第二行取消勾选 → 只刷第一行（内容仍保留）
+    shell.flash_rows[1]["check"].setChecked(False)
+    entries, incomplete = shell._checked_flash_rows()
+    check("第二行取消勾选：只刷第一行", entries == [("uboot_a", "a.img")],
+          str(entries))
+    check("取消勾选不算不完整", incomplete == [], str(incomplete))
+    check("取消勾选后内容仍保留",
+          shell.flash_rows[1]["image"].text() == "b.img",
+          shell.flash_rows[1]["image"].text())
+
+    # 勾了但只填分区（缺镜像）→ 报不完整
+    shell.flash_rows[1]["check"].setChecked(True)
     shell.flash_rows[1]["image"].setText("")
-    entries, half = shell._filled_flash_rows()
-    check("第二行留空：只刷第一行", entries == [("uboot_a", "a.img")], str(entries))
-    check("第二行留空：不算半填", half == [], str(half))
+    entries, incomplete = shell._checked_flash_rows()
+    check("勾选但缺镜像算不完整",
+          entries == [("uboot_a", "a.img")] and incomplete, str((entries, incomplete)))
+    check("不完整的提示能指明第几行缺什么",
+          "第 2 行" in incomplete[0] and "镜像" in incomplete[0],
+          str(incomplete))
 
-    # 第二行只填分区（缺镜像）
-    shell.flash_rows[1]["partition"].setCurrentText("dtbo_a")
-    entries, half = shell._filled_flash_rows()
-    check("只填分区算半填", entries == [("uboot_a", "a.img")] and half,
-          str((entries, half)))
+    # 两行都不勾 → 一条都没有
+    for row in shell.flash_rows:
+        row["check"].setChecked(False)
+    entries, _ = shell._checked_flash_rows()
+    check("两行都不勾：没有可烧录的行", entries == [], str(entries))
+    for row in shell.flash_rows:
+        row["check"].setChecked(True)
+    shell.flash_rows[1]["image"].setText("b.img")
 
     # _flash_many 拼出来的命令序列：默认不 erase
     captured = {}
